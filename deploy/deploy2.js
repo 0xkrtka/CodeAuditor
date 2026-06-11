@@ -54,6 +54,7 @@ async function main() {
     settings: {
       outputSelection: { "*": { "*": ["abi", "evm.bytecode"] } },
       optimizer: { enabled: true, runs: 200 },
+      viaIR: true,   // required to fix stack-too-deep on complex functions
     },
   };
 
