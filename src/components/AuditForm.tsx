@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { useAccount, useConnect, useDisconnect } from "wagmi";
+import { useAccount, useConnect, useDisconnect, useWriteContract } from "wagmi";
 import { injected } from "wagmi/connectors";
-import { formatUnits } from "viem";
+import { formatUnits, parseEther } from "viem";
 import { useAudit } from "@/hooks/useAudit";
 import { AuditResult } from "./AuditResult";
 
@@ -17,6 +17,20 @@ const PAYMENT_TOKEN = (
   process.env.NEXT_PUBLIC_PAYMENT_TOKEN ??
   "0x0000000000000000000000000000000000000000"
 ) as `0x${string}`;
+
+// ── Minimal ABI for MockToken mint ───────────────────────────────────────────
+const MOCK_TOKEN_MINT_ABI = [
+  {
+    name: "mint",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to",     type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
 
 // ── Sample vulnerable contract for demo ──────────────────────────────────────
 const SAMPLE_CODE = `// SPDX-License-Identifier: MIT
@@ -63,6 +77,30 @@ export function AuditForm() {
   const { address, isConnected } = useAccount();
   const { connect }    = useConnect();
   const { disconnect } = useDisconnect();
+  const { writeContractAsync } = useWriteContract();
+
+  const [minting, setMinting] = useState(false);
+  const [mintMsg, setMintMsg] = useState<string | null>(null);
+
+  async function handleMint() {
+    if (!address) return;
+    setMinting(true);
+    setMintMsg(null);
+    try {
+      await writeContractAsync({
+        address:      PAYMENT_TOKEN,
+        abi:          MOCK_TOKEN_MINT_ABI,
+        functionName: "mint",
+        args:         [address, parseEther("100")],
+      });
+      setMintMsg("✅ 100 mRITUAL minted to your wallet!");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMintMsg(msg.includes("rejected") ? "❌ Transaction rejected" : "❌ Mint failed");
+    } finally {
+      setMinting(false);
+    }
+  }
 
   const [code, setCode] = useState(SAMPLE_CODE);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -112,7 +150,8 @@ export function AuditForm() {
   }
 
   // Determine button state
-  const notDeployed = AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
+  const notDeployed = AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000"
+    || PAYMENT_TOKEN === "0x0000000000000000000000000000000000000000";
 
   const btnDisabled =
     !isConnected || !code.trim() || isOverLimit || notDeployed;
@@ -183,8 +222,23 @@ export function AuditForm() {
               color: "var(--text-tertiary)",
               fontFamily: "var(--font-mono)",
             }}>
-              Balance: {formatUnits(tokenBalance, 18)}
+              Balance: {formatUnits(tokenBalance, 18)} mRITUAL
             </span>
+          )}
+
+          {/* Mint test tokens button — only shown when contract is deployed */}
+          {isConnected && !notDeployed && (
+            <button
+              id="mint-token-btn"
+              className="btn btn-ghost"
+              style={{ fontSize: 12, padding: "4px 10px", gap: 4, opacity: minting ? 0.6 : 1 }}
+              onClick={handleMint}
+              disabled={minting}
+              title="Mint 100 mRITUAL test tokens"
+            >
+              <i className="ti ti-coins" aria-hidden="true" />
+              {minting ? "Minting…" : "Mint Tokens"}
+            </button>
           )}
         </div>
 
@@ -202,6 +256,22 @@ export function AuditForm() {
           {isConnected ? "Disconnect" : "Connect Wallet"}
         </button>
       </div>
+
+      {/* Mint feedback */}
+      {mintMsg && (
+        <div style={{
+          padding: "8px 14px",
+          borderRadius: "var(--radius-md)",
+          background: mintMsg.startsWith("✅") ? "rgba(16,185,129,0.08)" : "var(--color-danger-bg)",
+          border: `1px solid ${mintMsg.startsWith("✅") ? "rgba(16,185,129,0.25)" : "rgba(239,68,68,0.25)"}`,
+          marginBottom: "var(--sp-3)",
+          fontSize: 13,
+          color: mintMsg.startsWith("✅") ? "var(--color-success)" : "var(--color-danger)",
+          animation: "fade-in 200ms ease both",
+        }}>
+          {mintMsg}
+        </div>
+      )}
 
       {/* ── Code Editor ─────────────────────────────────────────────────── */}
       <div style={{ marginBottom: "var(--sp-4)" }}>
@@ -319,6 +389,42 @@ export function AuditForm() {
 
       {/* ── Submit Button or Progress ────────────────────────────────────── */}
       {(phase === "idle" || phase === "error") ? (
+        notDeployed ? (
+          /* ── Not Deployed Banner ────────────────────────────────────── */
+          <div style={{
+            padding: "16px 20px",
+            borderRadius: "var(--radius-lg)",
+            background: "rgba(139,92,246,0.06)",
+            border: "1px dashed rgba(139,92,246,0.35)",
+            textAlign: "center",
+            animation: "fade-in 300ms ease both",
+          }}>
+            <i className="ti ti-settings-2" style={{ fontSize: 28, color: "var(--ritual-purple-mid)", marginBottom: 8, display: "block" }} aria-hidden="true" />
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", marginBottom: 6 }}>
+              Contract Belum Di-Deploy
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: 12 }}>
+              Jalankan perintah berikut di terminal untuk deploy ke Ritual Chain:
+            </div>
+            <code style={{
+              display: "block",
+              padding: "10px 14px",
+              background: "var(--bg-code)",
+              borderRadius: "var(--radius-md)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+              color: "var(--color-success)",
+              textAlign: "left",
+              marginBottom: 10,
+              wordBreak: "break-all",
+            }}>
+              {`$env:PRIVATE_KEY="YOUR_KEY"; node deploy/deploy.js`}
+            </code>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Setelah deploy selesai, restart server dengan <strong>npm run dev</strong>
+            </div>
+          </div>
+        ) : (
         <button
           id="submit-audit-btn"
           className="btn btn-primary"
@@ -340,6 +446,7 @@ export function AuditForm() {
             </span>
           )}
         </button>
+        )
       ) : (
         <AuditProgressStepper phase={phase} tokenCount={tokenCount ?? 0} />
       )}

@@ -240,11 +240,11 @@ contract CodeAuditor {
         uint256 patLen = pattern.length;
 
         for (uint256 i = 0; i + patLen + 1 < b.length; i++) {
-            bool match = true;
+            bool found = true;
             for (uint256 j = 0; j < patLen; j++) {
-                if (b[i + j] != pattern[j]) { match = false; break; }
+                if (b[i + j] != pattern[j]) { found = false; break; }
             }
-            if (match) {
+            if (found) {
                 uint256 num = 0;
                 uint256 pos = i + patLen;
                 while (pos < b.length && b[pos] >= 0x30 && b[pos] <= 0x39) {
