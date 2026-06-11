@@ -1,0 +1,18 @@
+{
+  "name": "codeauditor-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "dev":   "ts-node-dev --respawn src/index.ts"
+  },
+  "dependencies": {
+    "viem": "2.17.4"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.14",
+    "ts-node":     "10.9.2",
+    "ts-node-dev": "2.0.0",
+    "typescript":  "5.5.4"
+  }
+}
