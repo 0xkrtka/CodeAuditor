@@ -1,29 +1,35 @@
 # Dependency directories
-**/node_modules/
-**/dist/
-**/.next/
-**/out/
+node_modules/
+frontend/node_modules/
+backend/node_modules/
 
-# IDEs and editors
-.idea/
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# Build outputs
+.next/
+frontend/.next/
+out/
+dist/
 
-# Local env files
+# Local env files — NEVER commit these
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
-.env
+frontend/.env.local
 
-# Hardhat/Foundry outputs
-**/out/
-**/cache/
+# Foundry / Hardhat
+contracts/out/
+contracts/cache/
 
-# System files
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.sw?
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
