@@ -6,6 +6,11 @@ pragma solidity ^0.8.20;
  * @notice On-chain Solidity audit powered by Ritual LLM precompile (0x0802)
  *         Pay-per-audit via X402 micropayment pattern.
  *         Audit results stream back via SSE; final report stored on-chain.
+ *
+ * v2 — fixed "Allocated too much memory" by:
+ *   1. Building prompt in two abi.encodePacked chunks (prefix + code suffix)
+ *   2. NOT storing full contractCode on-chain (only a hash)
+ *   3. Keeping AuditReport struct lean
  */
 
 // ─── Ritual LLM Precompile interface ─────────────────────────────────────────
@@ -43,20 +48,37 @@ contract CodeAuditor {
     string  public constant MODEL          = "zai-org/GLM-4.7-FP8";
     uint32  public constant MAX_TOKENS     = 2048;
 
+    // Prompt prefix — kept as a single constant to avoid repeated memory alloc
+    string private constant PROMPT_PREFIX =
+        "You are a senior smart contract security auditor. Analyze the following Solidity code for:\n"
+        "1. CRITICAL vulnerabilities (reentrancy, integer overflow, unchecked calls, access control)\n"
+        "2. HIGH severity issues (gas griefing, front-running, improper validation)\n"
+        "3. MEDIUM issues (code quality, gas inefficiency, missing events)\n"
+        "4. LOW / informational notes\n\n"
+        "Format your response as:\n"
+        "SEVERITY_SCORE: [0-100 integer, 0=critical issues, 100=clean]\n"
+        "SUMMARY: [2 sentence overview]\n"
+        "FINDINGS:\n[numbered list of findings with severity tag]\n"
+        "RECOMMENDATIONS:\n[actionable fixes]\n\n"
+        "CONTRACT CODE:\n```solidity\n";
+
+    string private constant PROMPT_SUFFIX = "\n```";
+
     // ── State ────────────────────────────────────────────────────────────────
     address public immutable owner;
-    IERC20  public immutable paymentToken;   // USDC or RITUAL token
-    uint256 public auditFee;                 // amount in token units (e.g. 1e6 = 1 USDC)
+    IERC20  public immutable paymentToken;
+    uint256 public auditFee;
 
     uint256 public auditCount;
 
+    // Lean struct — no large strings stored on-chain
     struct AuditReport {
         uint256 id;
         address requester;
-        string  contractCode;       // submitted Solidity source
-        string  auditResult;        // LLM response stored on-chain
-        bytes32 jobId;              // SSE streaming reference
-        uint8   severityScore;      // 0-100 (0=critical, 100=clean)
+        bytes32 codeHash;       // keccak256 of submitted source
+        string  auditResult;    // LLM response stored on-chain
+        bytes32 jobId;          // SSE streaming reference
+        uint8   severityScore;  // 0-100
         uint256 timestamp;
         bool    completed;
     }
@@ -68,7 +90,8 @@ contract CodeAuditor {
     event AuditRequested(
         uint256 indexed auditId,
         address indexed requester,
-        bytes32         jobId,        // frontend polls SSE on this jobId
+        bytes32         codeHash,
+        bytes32         jobId,
         uint256         timestamp
     );
 
@@ -86,7 +109,6 @@ contract CodeAuditor {
     error EmptyCode();
     error CodeTooLong();
     error AuditNotFound();
-    error AlreadyCompleted();
     error PaymentFailed();
 
     // ── Constructor ───────────────────────────────────────────────────────────
@@ -109,7 +131,7 @@ contract CodeAuditor {
     /**
      * @notice Submit Solidity source code for on-chain AI audit.
      *         Caller must have approved this contract to spend `auditFee` tokens.
-     * @param  contractCode  Raw Solidity source (UTF-8 string, max 32KB)
+     * @param  contractCode  Raw Solidity source (UTF-8 string, max 8KB to stay within EVM memory)
      * @return auditId       The new audit's ID
      * @return jobId         SSE job reference — pass to frontend for streaming
      */
@@ -117,15 +139,18 @@ contract CodeAuditor {
         external
         returns (uint256 auditId, bytes32 jobId)
     {
-        if (bytes(contractCode).length == 0)      revert EmptyCode();
-        if (bytes(contractCode).length > 32_768)  revert CodeTooLong();
+        uint256 codeLen = bytes(contractCode).length;
+        if (codeLen == 0)      revert EmptyCode();
+        if (codeLen > 8_192)   revert CodeTooLong(); // 8KB safe limit for EVM memory
 
         // ── Collect payment ──────────────────────────────────────────────────
         bool paid = paymentToken.transferFrom(msg.sender, address(this), auditFee);
         if (!paid) revert PaymentFailed();
 
-        // ── Build audit prompt ───────────────────────────────────────────────
-        string memory prompt = _buildPrompt(contractCode);
+        // ── Build prompt (two-part concat to stay within memory budget) ───────
+        string memory prompt = string(
+            abi.encodePacked(PROMPT_PREFIX, contractCode, PROMPT_SUFFIX)
+        );
 
         // ── Call Ritual LLM precompile ───────────────────────────────────────
         ILLMPrecompile llm = ILLMPrecompile(LLM_PRECOMPILE);
@@ -134,19 +159,19 @@ contract CodeAuditor {
             model:     MODEL,
             prompt:    prompt,
             maxTokens: MAX_TOKENS,
-            stream:    true        // enable SSE token streaming
+            stream:    true
         });
 
         ILLMPrecompile.LLMResponse memory resp = llm.complete(req);
 
-        // ── Store audit record ───────────────────────────────────────────────
+        // ── Store audit record (lean — only hash of code, not full source) ───
         auditId = ++auditCount;
         jobId   = resp.jobId;
 
         audits[auditId] = AuditReport({
             id:            auditId,
             requester:     msg.sender,
-            contractCode:  contractCode,
+            codeHash:      keccak256(bytes(contractCode)),
             auditResult:   resp.text,
             jobId:         resp.jobId,
             severityScore: _parseSeverity(resp.text),
@@ -156,7 +181,7 @@ contract CodeAuditor {
 
         auditsByUser[msg.sender].push(auditId);
 
-        emit AuditRequested(auditId, msg.sender, jobId, block.timestamp);
+        emit AuditRequested(auditId, msg.sender, audits[auditId].codeHash, jobId, block.timestamp);
         emit AuditCompleted(
             auditId,
             msg.sender,
@@ -202,28 +227,6 @@ contract CodeAuditor {
     // ─────────────────────────────────────────────────────────────────────────
     //  INTERNAL HELPERS
     // ─────────────────────────────────────────────────────────────────────────
-
-    function _buildPrompt(string memory code)
-        internal
-        pure
-        returns (string memory)
-    {
-        return string(abi.encodePacked(
-            "You are a senior smart contract security auditor. Analyze the following Solidity code for:\n",
-            "1. CRITICAL vulnerabilities (reentrancy, integer overflow, unchecked calls, access control)\n",
-            "2. HIGH severity issues (gas griefing, front-running, improper validation)\n",
-            "3. MEDIUM issues (code quality, gas inefficiency, missing events)\n",
-            "4. LOW / informational notes\n\n",
-            "Format your response as:\n",
-            "SEVERITY_SCORE: [0-100 integer, 0=critical issues, 100=clean]\n",
-            "SUMMARY: [2 sentence overview]\n",
-            "FINDINGS:\n[numbered list of findings with severity tag]\n",
-            "RECOMMENDATIONS:\n[actionable fixes]\n\n",
-            "CONTRACT CODE:\n```solidity\n",
-            code,
-            "\n```"
-        ));
-    }
 
     /**
      * @dev Parse SEVERITY_SCORE from LLM text response.
