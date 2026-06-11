@@ -4,10 +4,11 @@ import { useState, useCallback, useRef } from "react";
 import {
   useAccount,
   useWriteContract,
+  useSendTransaction,
   usePublicClient,
   useReadContract,
 } from "wagmi";
-import { decodeEventLog, parseEther } from "viem";
+import { decodeEventLog, encodeFunctionData, parseEther } from "viem";
 import {
   CODE_AUDITOR_ABI,
   ERC20_ABI,
@@ -58,7 +59,13 @@ export function useAudit(
 
   const [state, setState] = useState<AuditState>(INITIAL_STATE);
 
+  // useWriteContract — for ERC-20 approve only (no precompile involved)
   const { writeContractAsync } = useWriteContract();
+
+  // useSendTransaction — for requestAudit which internally calls LLM precompile 0x0802.
+  // Per Ritual docs: wagmi's writeContractAsync runs eth_call simulation first,
+  // which always reverts on async precompiles. useSendTransaction bypasses simulation.
+  const { sendTransactionAsync } = useSendTransaction();
 
   // ── Read current audit fee ────────────────────────────────────────────────
   const { data: auditFee } = useReadContract({
@@ -229,13 +236,23 @@ export function useAudit(
         }
 
         // ── Step 2: Submit audit tx ──────────────────────────────────────
+        // IMPORTANT: Use sendTransactionAsync (not writeContractAsync) because
+        // requestAudit internally calls LLM precompile 0x0802 (async).
+        // writeContractAsync runs eth_call simulation first, which always
+        // reverts on Ritual async precompiles → "r.connector.getChainId is not a function"
+        // See: https://skills.ritualfoundation.org (ritual-dapp-frontend skill)
         setState((prev) => ({ ...prev, phase: "submitting" }));
 
-        const auditTx = await writeContractAsync({
-          address:      auditorAddress,
+        const auditData = encodeFunctionData({
           abi:          CODE_AUDITOR_ABI,
           functionName: "requestAudit",
           args:         [contractCode],
+        });
+
+        const auditTx = await sendTransactionAsync({
+          to:   auditorAddress,
+          data: auditData,
+          gas:  2_000_000n,  // explicit gas — required for precompile calls
         });
 
         setState((prev) => ({ ...prev, txHash: auditTx, phase: "waiting" }));
