@@ -7,11 +7,12 @@ import {
   usePublicClient,
   useReadContract,
 } from "wagmi";
-import { decodeEventLog, toHex } from "viem";
+import { decodeEventLog, parseEther } from "viem";
 import {
   CODE_AUDITOR_ABI,
   ERC20_ABI,
   buildSseUrl,
+  ritualChain,
 } from "@/lib/ritual";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -61,26 +62,29 @@ export function useAudit(
 
   // ── Read current audit fee ────────────────────────────────────────────────
   const { data: auditFee } = useReadContract({
-    address: auditorAddress,
-    abi:     CODE_AUDITOR_ABI,
+    address:      auditorAddress,
+    abi:          CODE_AUDITOR_ABI,
     functionName: "auditFee",
+    chainId:      ritualChain.id,   // ← always read from Ritual, not wallet chain
     query: { enabled: auditorAddress !== "0x0000000000000000000000000000000000000000" },
   });
 
   // ── Read current allowance ────────────────────────────────────────────────
   const { data: currentAllowance } = useReadContract({
-    address:  paymentToken,
-    abi:      ERC20_ABI,
+    address:      paymentToken,
+    abi:          ERC20_ABI,
     functionName: "allowance",
+    chainId:      ritualChain.id,   // ← always read from Ritual
     args: userAddress ? [userAddress, auditorAddress] : undefined,
     query: { enabled: !!userAddress && paymentToken !== "0x0000000000000000000000000000000000000000" },
   });
 
   // ── Read user token balance ───────────────────────────────────────────────
   const { data: tokenBalance } = useReadContract({
-    address:  paymentToken,
-    abi:      ERC20_ABI,
+    address:      paymentToken,
+    abi:          ERC20_ABI,
     functionName: "balanceOf",
+    chainId:      ritualChain.id,   // ← always read from Ritual
     args: userAddress ? [userAddress] : undefined,
     query: { enabled: !!userAddress && paymentToken !== "0x0000000000000000000000000000000000000000" },
   });
@@ -186,9 +190,10 @@ export function useAudit(
         setState((prev) => ({ ...prev, error: "Connect your wallet first" }));
         return;
       }
-      if (!auditFee) {
-        setState((prev) => ({ ...prev, error: "Could not read audit fee — is the contract deployed?" }));
-        return;
+      // Use fetched fee, or fall back to 1 mRITUAL if the read is still loading
+      const fee = auditFee ?? parseEther("1");
+      if (auditFee === undefined) {
+        console.warn("auditFee not loaded yet — using default 1 mRITUAL");
       }
       if (!publicClient) {
         setState((prev) => ({ ...prev, error: "Public client not available" }));
@@ -203,14 +208,14 @@ export function useAudit(
       try {
         // ── Step 1: Approve payment token if needed ──────────────────────
         const needsApprove =
-          !currentAllowance || currentAllowance < auditFee;
+          !currentAllowance || currentAllowance < fee;
 
         if (needsApprove) {
           const approveTx = await writeContractAsync({
             address:      paymentToken,
             abi:          ERC20_ABI,
             functionName: "approve",
-            args:         [auditorAddress, auditFee],
+            args:         [auditorAddress, fee],
           });
 
           setState((prev) => ({ ...prev, txHash: approveTx }));

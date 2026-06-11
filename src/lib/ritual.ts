@@ -69,7 +69,7 @@ export const CODE_AUDITOR_ABI = [
         components: [
           { name: "id",            type: "uint256" },
           { name: "requester",     type: "address" },
-          { name: "contractCode",  type: "string"  },
+          { name: "codeHash",      type: "bytes32"  },
           { name: "auditResult",   type: "string"  },
           { name: "jobId",         type: "bytes32" },
           { name: "severityScore", type: "uint8"   },
@@ -99,6 +99,7 @@ export const CODE_AUDITOR_ABI = [
     inputs: [
       { name: "auditId",   type: "uint256", indexed: true  },
       { name: "requester", type: "address", indexed: true  },
+      { name: "codeHash",  type: "bytes32", indexed: false },
       { name: "jobId",     type: "bytes32", indexed: false },
       { name: "timestamp", type: "uint256", indexed: false },
     ],

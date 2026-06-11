@@ -27,9 +27,9 @@ const wagmiConfig = createConfig({
     // This avoids pulling in MetaMask SDK (causes encoding dep warning)
     injected({ shimDisconnect: true }),
   ],
-  batch: {
-    multicall: { wait: 100 }, // batch multicall within 100ms window
-  },
+  // Multicall disabled — Ritual testnet may not have multicall3 deployed,
+  // which causes all batched reads to silently fail and return undefined.
+  batch: { multicall: false },
 });
 
 export function Providers({ children }: { children: React.ReactNode }) {
