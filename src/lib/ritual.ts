@@ -52,7 +52,10 @@ export const CODE_AUDITOR_ABI = [
     name: "requestAudit",
     type: "function",
     stateMutability: "nonpayable",
-    inputs:  [{ name: "contractCode", type: "string" }],
+    inputs:  [
+      { name: "contractCode", type: "string" },
+      { name: "executor",     type: "address" },
+    ],
     outputs: [
       { name: "auditId", type: "uint256" },
       { name: "jobId",   type: "bytes32" },
@@ -111,7 +114,6 @@ export const CODE_AUDITOR_ABI = [
       { name: "auditId",       type: "uint256", indexed: true  },
       { name: "requester",     type: "address", indexed: true  },
       { name: "severityScore", type: "uint8",   indexed: false },
-      { name: "tokensCost",    type: "uint256", indexed: false },
     ],
   },
 ] as const;

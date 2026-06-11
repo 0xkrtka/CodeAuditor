@@ -16,9 +16,11 @@ async function main() {
   }
 
   // Token MockRITUAL yang sudah di-deploy
-  const TOKEN_ADDRESS = "0x26c11EB567BB83d2B031af41188ECA7872CaAF07";
-  const AUDIT_FEE     = ethers.parseEther("1"); // 1 mRITUAL per audit
-  const RPC_URL       = "https://rpc.ritualfoundation.org";
+  const TOKEN_ADDRESS    = "0x26c11EB567BB83d2B031af41188ECA7872CaAF07";
+  const AUDIT_FEE        = ethers.parseEther("1"); // 1 mRITUAL per audit
+  // Executor from TEEServiceRegistry (queried off-chain, LLM capability=1)
+  const EXECUTOR_ADDRESS = "0xec6a6c7ebd08616c805e18cdea6bf9c54950c77d";
+  const RPC_URL          = "https://rpc.ritualfoundation.org";
   const CHAIN_ID      = 1979n;
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -82,12 +84,23 @@ async function main() {
     wallet
   );
 
-  console.log("\n📦  Deploying CodeAuditor...");
-  const contract = await factory.deploy(TOKEN_ADDRESS, AUDIT_FEE);
+  console.log("\n📦  Deploying CodeAuditor v4...");
+  const contract = await factory.deploy(TOKEN_ADDRESS, AUDIT_FEE, EXECUTOR_ADDRESS);
   console.log(`   Tx hash: ${contract.deploymentTransaction()?.hash}`);
   console.log("   Waiting for confirmation...");
   await contract.waitForDeployment();
   const auditorAddress = await contract.getAddress();
+
+  // Auto-deposit 0.4 RITUAL into RitualWallet for executor fees
+  console.log("\n💰  Depositing 0.4 RITUAL to RitualWallet for executor fees...");
+  const depositTx = await wallet.sendTransaction({
+    to: auditorAddress,
+    data: ethers.id("depositForFees()").slice(0, 10),
+    value: ethers.parseEther("0.4"),
+  });
+  console.log(`   Deposit tx: ${depositTx.hash}`);
+  await depositTx.wait();
+  console.log("✅  RitualWallet funded with 0.4 RITUAL");
   console.log(`✅  CodeAuditor: ${auditorAddress}`);
 
   // Write .env.local

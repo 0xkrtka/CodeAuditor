@@ -239,20 +239,20 @@ export function useAudit(
         // IMPORTANT: Use sendTransactionAsync (not writeContractAsync) because
         // requestAudit internally calls LLM precompile 0x0802 (async).
         // writeContractAsync runs eth_call simulation first, which always
-        // reverts on Ritual async precompiles → "r.connector.getChainId is not a function"
-        // See: https://skills.ritualfoundation.org (ritual-dapp-frontend skill)
+        // reverts on Ritual async precompiles.
+        // v4: pass executor as 2nd arg (0x0 = use defaultExecutor set in contract)
         setState((prev) => ({ ...prev, phase: "submitting" }));
 
         const auditData = encodeFunctionData({
           abi:          CODE_AUDITOR_ABI,
           functionName: "requestAudit",
-          args:         [contractCode],
+          args:         [contractCode, "0x0000000000000000000000000000000000000000"],
         });
 
         const auditTx = await sendTransactionAsync({
           to:   auditorAddress,
           data: auditData,
-          gas:  2_000_000n,  // explicit gas — required for precompile calls
+          gas:  5_000_000n,  // 5M gas — Ritual docs recommend 5M for full LLM inference
         });
 
         setState((prev) => ({ ...prev, txHash: auditTx, phase: "waiting" }));
