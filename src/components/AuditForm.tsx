@@ -100,7 +100,22 @@ export function AuditForm() {
       setMinting(false);
     }
   }
+  const [depositing, setDepositing] = useState(false);
+  const [depositMsg, setDepositMsg] = useState<string | null>(null);
 
+  async function handleDeposit() {
+    setDepositing(true);
+    setDepositMsg(null);
+    try {
+      await depositFees();
+      setDepositMsg("✅ 0.5 RITUAL successfully deposited to RitualWallet!");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setDepositMsg(msg.includes("rejected") ? "❌ Transaction rejected" : "❌ Deposit failed");
+    } finally {
+      setDepositing(false);
+    }
+  }
   const [code, setCode] = useState(SAMPLE_CODE);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,6 +129,8 @@ export function AuditForm() {
     tokenCount,
     submitAudit,
     reset,
+    ritualWalletBalance,
+    depositFees,
   } = useAudit(AUDITOR_ADDRESS, PAYMENT_TOKEN);
 
   const isActive  = phase !== "idle" && phase !== "error";
@@ -150,8 +167,10 @@ export function AuditForm() {
   const notDeployed =
     AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
 
+  const isBalanceLow = isConnected && ritualWalletBalance !== undefined && ritualWalletBalance < 350000000000000000n;
+
   const btnDisabled =
-    !isConnected || !code.trim() || isOverLimit || notDeployed;
+    !isConnected || !code.trim() || isOverLimit || notDeployed || isBalanceLow;
 
   const btnLabel = !isConnected
     ? "Connect wallet to audit"
@@ -159,6 +178,8 @@ export function AuditForm() {
     ? "Contract not deployed"
     : isOverLimit
     ? "Code too long (max 32KB)"
+    : isBalanceLow
+    ? "Deposit RITUAL below to audit"
     : "Request On-Chain Audit";
 
   return (
@@ -206,6 +227,20 @@ export function AuditForm() {
               fontFamily: "var(--font-mono)",
             }}>
               Fee: {formatUnits(auditFee, 18)} RITUAL
+            </span>
+          )}
+
+          {isConnected && ritualWalletBalance !== undefined && (
+            <span style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(139,92,246,0.1)",
+              border: "1px solid rgba(139,92,246,0.25)",
+              color: "var(--ritual-purple-mid)",
+              fontFamily: "var(--font-mono)",
+            }}>
+              RitualWallet: {parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(2)} RITUAL
             </span>
           )}
 
@@ -369,6 +404,52 @@ export function AuditForm() {
           <span style={{ fontSize: 13, color: "var(--color-danger)", lineHeight: 1.5 }}>
             {error}
           </span>
+        </div>
+      )}
+
+      {/* ── Low RitualWallet Balance Banner ─────────────────────────────── */}
+      {isConnected && ritualWalletBalance !== undefined && ritualWalletBalance < 350000000000000000n && (
+        <div style={{
+          padding: "16px 20px",
+          borderRadius: "var(--radius-lg)",
+          background: "rgba(245,158,11,0.06)",
+          border: "1px dashed rgba(245,158,11,0.35)",
+          marginBottom: "var(--sp-4)",
+          animation: "fade-in 300ms ease both",
+        }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+            <i className="ti ti-alert-circle" style={{ fontSize: 20, color: "var(--color-warning)", marginTop: 1 }} aria-hidden="true" />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>
+                RitualWallet Balance is Low ({parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(4)} RITUAL)
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Ritual precompiles require a deposit of at least <strong>0.31 RITUAL</strong> to cover worst-case escrow fees per in-flight audit. Please deposit RITUAL to enable audits.
+              </div>
+            </div>
+          </div>
+          
+          <button
+            id="deposit-fees-btn"
+            className="btn btn-secondary"
+            style={{ width: "100%", padding: "10px", fontSize: 13, gap: 6 }}
+            onClick={handleDeposit}
+            disabled={depositing}
+          >
+            <i className={depositing ? "ti ti-loader animate-spin" : "ti ti-wallet-handshake"} aria-hidden="true" />
+            {depositing ? "Depositing 0.5 RITUAL..." : "Deposit 0.5 RITUAL to RitualWallet"}
+          </button>
+
+          {depositMsg && (
+            <div style={{
+              fontSize: 11,
+              marginTop: 8,
+              color: depositMsg.startsWith("❌") ? "var(--color-danger)" : "var(--color-success)",
+              fontFamily: "var(--font-mono)",
+            }}>
+              {depositMsg}
+            </div>
+          )}
         </div>
       )}
 

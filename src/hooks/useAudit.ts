@@ -16,6 +16,7 @@ import {
   keccak256,
   toHex,
   parseEther,
+  encodeFunctionData,
 } from "viem";
 import {
   CODE_AUDITOR_ABI,
@@ -228,6 +229,62 @@ export function useAudit(
   // Per Ritual docs: NEVER use writeContractAsync for LLM calls.
   // writeContractAsync runs eth_call simulation which ALWAYS reverts on async precompiles.
   const { sendTransactionAsync } = useSendTransaction();
+
+  // ─── Query user's balance in RitualWallet ──────────────────────────────────
+  const { data: ritualWalletBalance, refetch: refetchWalletBalance } = useReadContract({
+    address:      RITUAL_CONTRACTS.RITUAL_WALLET,
+    abi: [{
+      name: "balanceOf",
+      type: "function",
+      stateMutability: "view",
+      inputs: [{ name: "account", type: "address" }],
+      outputs: [{ name: "balance", type: "uint256" }],
+    }] as const,
+    functionName: "balanceOf",
+    chainId:      ritualChain.id,
+    args: userAddress ? [userAddress] : undefined,
+    query: {
+      enabled: !!userAddress,
+    },
+  });
+
+  // ─── Deposit 0.5 RITUAL to RitualWallet ──────────────────────────────────────
+  const depositFees = useCallback(async () => {
+    if (!userAddress || !walletClient) {
+      throw new Error("Wallet not connected");
+    }
+
+    if (chain?.id !== ritualChain.id) {
+      if (!switchChainAsync) {
+        throw new Error("Switch network support not available");
+      }
+      await switchChainAsync({ chainId: ritualChain.id });
+    }
+
+    const data = encodeFunctionData({
+      abi: [{
+        name: 'deposit',
+        type: 'function',
+        stateMutability: 'payable',
+        inputs: [{ name: 'lockDuration', type: 'uint256' }],
+        outputs: [],
+      }] as const,
+      functionName: 'deposit',
+      args: [5000n],
+    });
+
+    const tx = await sendTransactionAsync({
+      to:      RITUAL_CONTRACTS.RITUAL_WALLET,
+      data,
+      value:   parseEther("0.5"),
+      chainId: ritualChain.id,
+    });
+
+    if (publicClient) {
+      await publicClient.waitForTransactionReceipt({ hash: tx });
+      await refetchWalletBalance();
+    }
+  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance]);
 
   // ─── Audit fee (kept for UI display only, payment bypassed) ──────────────
   const { data: auditFee } = useReadContract({
@@ -552,5 +609,7 @@ export function useAudit(
     reset,
     auditFee,
     userAddress,
+    ritualWalletBalance,
+    depositFees,
   };
 }
