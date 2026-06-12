@@ -39,7 +39,7 @@ export const RITUAL_CONTRACTS = {
 // This executor has 500k+ transactions and 20M+ RITUAL balance — highly active.
 // Used as fallback if defaultExecutor on contract is address(0).
 // Source: getLogs on ASYNC_DELIVERY contract, cross-checked with RitualWallet balance.
-export const KNOWN_EXECUTOR = "0x27E4Ddaaea7b54dA3Ef4997441493d9f0D3f4Aa5" as `0x${string}`;
+export const KNOWN_EXECUTOR = "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B" as `0x${string}`;
 
 // ─── SSE endpoint for streaming LLM tokens ───────────────────────────────────
 export const SSE_BASE_URL = "https://rpc.ritualfoundation.org/sse";
