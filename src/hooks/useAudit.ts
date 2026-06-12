@@ -224,6 +224,7 @@ export function useAudit(
             abi:          ERC20_ABI,
             functionName: "approve",
             args:         [auditorAddress, fee],
+            chainId:      ritualChain.id,
           });
 
           setState((prev) => ({ ...prev, txHash: approveTx }));
@@ -254,6 +255,7 @@ export function useAudit(
           to:   auditorAddress,
           data: auditData,
           gas:  5_000_000n,  // 5M gas — Ritual docs recommend 5M for full LLM inference
+          chainId: ritualChain.id,
         });
 
         setState((prev) => ({ ...prev, txHash: auditTx, phase: "waiting" }));
