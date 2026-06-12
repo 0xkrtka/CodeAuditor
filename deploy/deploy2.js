@@ -19,7 +19,7 @@ async function main() {
   const TOKEN_ADDRESS    = "0x26c11EB567BB83d2B031af41188ECA7872CaAF07";
   const AUDIT_FEE        = ethers.parseEther("1"); // 1 mRITUAL per audit
   // Executor from TEEServiceRegistry (queried off-chain, LLM capability=1)
-  const EXECUTOR_ADDRESS = "0xec6a6c7ebd08616c805e18cdea6bf9c54950c77d";
+  const EXECUTOR_ADDRESS = "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B";
   const RPC_URL          = "https://rpc.ritualfoundation.org";
   const CHAIN_ID      = 1979n;
 

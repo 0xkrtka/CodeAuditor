@@ -22,7 +22,6 @@ import {
   CODE_AUDITOR_ABI,
   ERC20_ABI,
   ritualChain,
-  KNOWN_EXECUTOR,
   RITUAL_CONTRACTS,
 } from "@/lib/ritual";
 
@@ -214,8 +213,8 @@ function parseSeverityScore(text: string): number | null {
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useAudit(
-  _auditorAddress: `0x${string}`,  // kept for API compat; not used for LLM call
-  _paymentToken:   `0x${string}`,  // kept for API compat
+  _auditorAddress: `0x${string}`,  // CodeAuditor contract address (used for requestAudit calls)
+  _paymentToken:   `0x${string}`,  // mRITUAL token address (used for approval + payment)
 ) {
   const { address: userAddress, chain } = useAccount();
   const { switchChainAsync }            = useSwitchChain();
@@ -225,12 +224,12 @@ export function useAudit(
 
   const [state, setState] = useState<AuditState>(INITIAL_STATE);
 
-  // useSendTransaction — sends raw tx directly to 0x0802 precompile.
-  // Per Ritual docs: NEVER use writeContractAsync for LLM calls.
-  // writeContractAsync runs eth_call simulation which ALWAYS reverts on async precompiles.
+  // useSendTransaction — used for approval + requestAudit on CodeAuditor.
+  // We pass a manual gas limit to bypass MetaMask simulation of async precompile calls.
   const { sendTransactionAsync } = useSendTransaction();
 
-  // ─── Query user's balance in RitualWallet ──────────────────────────────────
+  // ─── Query CodeAuditor contract's balance in RitualWallet ──────────────────
+  // This is the balance used for executor fees when requestAudit is called.
   const { data: ritualWalletBalance, refetch: refetchWalletBalance } = useReadContract({
     address:      RITUAL_CONTRACTS.RITUAL_WALLET,
     abi: [{
@@ -242,13 +241,15 @@ export function useAudit(
     }] as const,
     functionName: "balanceOf",
     chainId:      ritualChain.id,
-    args: userAddress ? [userAddress] : undefined,
+    args: _auditorAddress ? [_auditorAddress] : undefined,
     query: {
-      enabled: !!userAddress,
+      enabled: _auditorAddress !== "0x0000000000000000000000000000000000000000",
     },
   });
 
-  // ─── Deposit 0.2 RITUAL to RitualWallet (plain transfer — contract uses receive()) ──
+  // ─── Deposit 0.05 RITUAL to CodeAuditor's RitualWallet for executor fees ──
+  // Calls depositForFees() on CodeAuditor which calls RitualWallet.deposit(lockDuration)
+  // with a 90-day lock. This ensures executor fees are available for LLM audit calls.
   const depositFees = useCallback(async () => {
     if (!userAddress || !walletClient) {
       throw new Error("Wallet not connected");
@@ -261,11 +262,22 @@ export function useAudit(
       await switchChainAsync({ chainId: ritualChain.id });
     }
 
-    // RitualWallet only has receive() — deposit by sending native RITUAL with no calldata
+    // Call depositForFees() on CodeAuditor — it forwards to RitualWallet.deposit(7776000)
+    const depositData = encodeFunctionData({
+      abi: [{
+        name: "depositForFees",
+        type: "function",
+        stateMutability: "payable",
+        inputs: [],
+        outputs: [],
+      }] as const,
+      functionName: "depositForFees",
+    });
+
     const tx = await sendTransactionAsync({
-      to:      RITUAL_CONTRACTS.RITUAL_WALLET,
-      data:    "0x",
-      value:   parseEther("0.2"),
+      to:      _auditorAddress,
+      data:    depositData,
+      value:   parseEther("0.05"),
       chainId: ritualChain.id,
     });
 
@@ -273,7 +285,7 @@ export function useAudit(
       await publicClient.waitForTransactionReceipt({ hash: tx });
       await refetchWalletBalance();
     }
-  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance]);
+  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance, _auditorAddress]);
 
   // ─── Withdraw all funds from RitualWallet ───────────────────────────────────
   const withdrawFees = useCallback(async () => {
@@ -489,22 +501,51 @@ export function useAudit(
           await switchChainAsync({ chainId: ritualChain.id });
         }
 
-        // ── Step 1: Encode 30-field LLM payload ─────────────────────────
-        // Per Ritual docs: send DIRECTLY to 0x0802 — NOT through a contract.
-        // Calling 0x0802 via Solidity (contract.call) causes MetaMask simulation
-        // to always revert because eth_call cannot simulate async precompiles.
-        const messagesJson = buildAuditMessages(contractCode);
-        const payload      = encodeLLMPayload(KNOWN_EXECUTOR, messagesJson, true); // stream=true
+        // ── Step 1: Handle Payment Token Approval ───────────────────────
+        const fee = auditFee ?? parseEther("1");
+        console.log("[Audit] Checking mRITUAL allowance...");
+        const allowance = await publicClient.readContract({
+          address: _paymentToken,
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [userAddress, _auditorAddress],
+        });
 
-        console.log("[Audit] Sending tx to LLM precompile 0x0802...");
-        console.log("[Audit] Executor:", KNOWN_EXECUTOR);
+        if (allowance < fee) {
+          console.log("[Audit] Allowance too low. Approving mRITUAL...");
+          setState((prev) => ({ ...prev, error: "Approving mRITUAL payment..." }));
+          
+          const approveData = encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "approve",
+            args: [_auditorAddress, fee * 100n],
+          });
 
-        // ── Step 2: Send tx directly to 0x0802 ──────────────────────────
-        // Gas: 3M is sufficient. Inference is off-chain, gas only covers on-chain commitment.
+          const approveTx = await sendTransactionAsync({
+            to: _paymentToken,
+            data: approveData,
+            chainId: ritualChain.id,
+          });
+
+          console.log("[Audit] Approve tx sent:", approveTx);
+          await publicClient.waitForTransactionReceipt({ hash: approveTx });
+          console.log("[Audit] Approve tx confirmed");
+        }
+
+        // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
+        // Per Ritual docs: 0x0802 simulation fails on MetaMask (eth_call reverts).
+        // To bypass this, call contract with a high manual gas limit (5,000,000).
+        const data = encodeFunctionData({
+          abi: CODE_AUDITOR_ABI,
+          functionName: "requestAudit",
+          args: [contractCode, "0x0000000000000000000000000000000000000000"], // Use default executor on-chain
+        });
+
+        console.log("[Audit] Sending requestAudit tx to contract...");
         const auditTx = await sendTransactionAsync({
-          to:      RITUAL_CONTRACTS.LLM_PRECOMPILE,
-          data:    payload,
-          gas:     3_000_000n,
+          to:      _auditorAddress,
+          data,
+          gas:     5_000_000n, // Manual gas limit to bypass MetaMask simulation revert
           chainId: ritualChain.id,
         });
 
@@ -530,7 +571,7 @@ export function useAudit(
           setState((prev) => ({
             ...prev,
             phase: "error",
-            error: "Transaction reverted on-chain. Check RitualWallet balance and try again.",
+            error: "Transaction reverted on-chain. Check contract RitualWallet balance and try again.",
           }));
           return;
         }
@@ -614,6 +655,9 @@ export function useAudit(
       sendTransactionAsync,
       switchChainAsync,
       openSseStream,
+      _auditorAddress,
+      _paymentToken,
+      auditFee,
     ],
   );
 

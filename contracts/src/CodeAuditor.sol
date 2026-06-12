@@ -31,6 +31,12 @@ contract CodeAuditor {
     uint256 public auditCount;
     address public defaultExecutor; // set by owner, queried off-chain from TEEServiceRegistry
 
+    struct StorageRef {
+        string platform;
+        string path;
+        string key_ref;
+    }
+
     struct AuditReport {
         uint256 id;
         address requester;
@@ -78,7 +84,7 @@ contract CodeAuditor {
     function depositForFees() external payable {
         require(msg.value > 0, "Send RITUAL to deposit");
         (bool ok,) = RITUAL_WALLET.call{value: msg.value}(
-            abi.encodeWithSignature("deposit(uint256)", 5000)
+            abi.encodeWithSignature("deposit(uint256)", 7776000) // 90 days lock duration to ensure it never expires during normal usage
         );
         require(ok, "RitualWallet deposit failed");
     }
@@ -155,6 +161,25 @@ contract CodeAuditor {
         paymentToken.transfer(to, amount);
     }
 
+    /// @notice Rescue native RITUAL locked in RitualWallet by this contract.
+    ///         Can only be called AFTER the lock expires (lockUntil block < current block).
+    ///         Calls RitualWallet.withdraw() on behalf of this contract.
+    function rescueRitualWallet(uint256 amount) external onlyOwner {
+        (bool ok,) = RITUAL_WALLET.call(
+            abi.encodeWithSignature("withdraw(uint256)", amount)
+        );
+        require(ok, "RitualWallet withdraw failed - lock may not have expired");
+    }
+
+    /// @notice Rescue any native RITUAL held directly in this contract (not in RitualWallet).
+    ///         Transfers to owner.
+    function rescueNative() external onlyOwner {
+        uint256 bal = address(this).balance;
+        require(bal > 0, "No native balance");
+        (bool ok,) = owner.call{value: bal}("");
+        require(ok, "Native transfer failed");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  INTERNAL: Call LLM precompile
     // ─────────────────────────────────────────────────────────────────────────
@@ -181,6 +206,7 @@ contract CodeAuditor {
         pure
         returns (bytes memory)
     {
+        StorageRef memory convoHistory = StorageRef("", "", "");
         return abi.encode(
             executor,               // address  executor
             new bytes[](0),         // bytes[]  encryptedSecrets
@@ -211,7 +237,7 @@ contract CodeAuditor {
             int256(1000),           // int256   topP (1.0 × 1000)
             "",                     // string   user
             false,                  // bool     piiEnabled
-            abi.encode("", "", "")  // (string,string,string) convoHistory — empty
+            convoHistory            // (string,string,string) convoHistory — empty
         );
     }
 
