@@ -7,6 +7,7 @@ import {
   useSendTransaction,
   usePublicClient,
   useReadContract,
+  useSwitchChain,
 } from "wagmi";
 import { decodeEventLog, encodeFunctionData, parseEther } from "viem";
 import {
@@ -54,7 +55,8 @@ export function useAudit(
   auditorAddress:  `0x${string}`,
   paymentToken:    `0x${string}`,
 ) {
-  const { address: userAddress } = useAccount();
+  const { address: userAddress, chain } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
   const publicClient = usePublicClient();
   const sseRef = useRef<EventSource | null>(null);
 
@@ -214,6 +216,14 @@ export function useAudit(
       });
 
       try {
+        // ── Step 0: Switch network if needed ──────────────────────────────
+        if (chain?.id !== ritualChain.id) {
+          if (!switchChainAsync) {
+            throw new Error("Wrong network. Please switch to Ritual Chain in MetaMask.");
+          }
+          await switchChainAsync({ chainId: ritualChain.id });
+        }
+
         // ── Step 1: Approve payment token if needed ──────────────────────
         const needsApprove =
           !currentAllowance || currentAllowance < fee;
