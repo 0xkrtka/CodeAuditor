@@ -116,6 +116,22 @@ export function AuditForm() {
       setDepositing(false);
     }
   }
+
+  const [withdrawing, setWithdrawing] = useState(false);
+
+  async function handleWithdraw() {
+    setWithdrawing(true);
+    try {
+      await withdrawFees();
+      alert("✅ RITUAL successfully withdrawn from RitualWallet back to your wallet!");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(msg.includes("rejected") ? "❌ Transaction rejected" : `❌ Withdraw failed: ${msg}`);
+    } finally {
+      setWithdrawing(false);
+    }
+  }
+
   const [code, setCode] = useState(SAMPLE_CODE);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -131,6 +147,7 @@ export function AuditForm() {
     reset,
     ritualWalletBalance,
     depositFees,
+    withdrawFees,
   } = useAudit(AUDITOR_ADDRESS, PAYMENT_TOKEN);
 
   const isActive  = phase !== "idle" && phase !== "error";
@@ -239,8 +256,33 @@ export function AuditForm() {
               border: "1px solid rgba(139,92,246,0.25)",
               color: "var(--ritual-purple-mid)",
               fontFamily: "var(--font-mono)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "8px",
             }}>
-              RitualWallet: {parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(2)} RITUAL
+              <span>RitualWallet: {parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(2)} RITUAL</span>
+              {ritualWalletBalance > 0n && (
+                <button
+                  onClick={handleWithdraw}
+                  disabled={withdrawing}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#f87171", // soft light red/rose
+                    cursor: withdrawing ? "not-allowed" : "pointer",
+                    fontSize: "11px",
+                    fontWeight: "bold",
+                    padding: "0 4px",
+                    textDecoration: "underline",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "2px",
+                  }}
+                  title="Withdraw all RITUAL back to your wallet"
+                >
+                  {withdrawing ? "…" : "Withdraw"}
+                </button>
+              )}
             </span>
           )}
 

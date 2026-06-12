@@ -275,6 +275,44 @@ export function useAudit(
     }
   }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance]);
 
+  // ─── Withdraw all funds from RitualWallet ───────────────────────────────────
+  const withdrawFees = useCallback(async () => {
+    if (!userAddress || !walletClient || !ritualWalletBalance || ritualWalletBalance === 0n) {
+      throw new Error("Wallet not connected or balance is zero");
+    }
+
+    if (chain?.id !== ritualChain.id) {
+      if (!switchChainAsync) {
+        throw new Error("Switch network support not available");
+      }
+      await switchChainAsync({ chainId: ritualChain.id });
+    }
+
+    // Encode withdraw(uint256) function call
+    const data = encodeFunctionData({
+      abi: [{
+        name: 'withdraw',
+        type: 'function',
+        stateMutability: 'nonpayable',
+        inputs: [{ name: 'amount', type: 'uint256' }],
+        outputs: [],
+      }] as const,
+      functionName: 'withdraw',
+      args: [ritualWalletBalance],
+    });
+
+    const tx = await sendTransactionAsync({
+      to:      RITUAL_CONTRACTS.RITUAL_WALLET,
+      data,
+      chainId: ritualChain.id,
+    });
+
+    if (publicClient) {
+      await publicClient.waitForTransactionReceipt({ hash: tx });
+      await refetchWalletBalance();
+    }
+  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance, ritualWalletBalance]);
+
   // ─── Audit fee (kept for UI display only, payment bypassed) ──────────────
   const { data: auditFee } = useReadContract({
     address:      _auditorAddress,
@@ -601,5 +639,6 @@ export function useAudit(
     userAddress,
     ritualWalletBalance,
     depositFees,
+    withdrawFees,
   };
 }
