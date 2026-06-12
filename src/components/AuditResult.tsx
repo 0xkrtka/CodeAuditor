@@ -9,7 +9,7 @@ interface Props {
   streamedText:  string;
   severityScore: number | null;
   txHash:        string | null;
-  jobId:         string | null;
+  jobId?:        string | null;
   onReset:       () => void;
 }
 
@@ -108,7 +108,7 @@ export function AuditResult({
   const isStreaming = phase === "streaming";
   const isDone      = phase === "complete";
   const isError     = phase === "error";
-  const isWaiting   = phase === "approving" || phase === "submitting" || phase === "waiting";
+  const isWaiting   = phase === "submitting" || phase === "waiting";
 
   const statusColor = isStreaming
     ? "var(--color-warning)"
@@ -147,7 +147,6 @@ export function AuditResult({
             style={{ background: statusColor, color: statusColor }}
           />
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-            {phase === "approving"  && "Approving payment token…"}
             {phase === "submitting" && "Submitting to Ritual Chain…"}
             {phase === "waiting"    && "Waiting for confirmation…"}
             {phase === "streaming"  && "AI audit streaming via TEE…"}
@@ -226,7 +225,6 @@ export function AuditResult({
         }}>
           <LoadingDots />
           <p style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
-            {phase === "approving"  && "Waiting for MetaMask approval…"}
             {phase === "submitting" && "Transaction submitted — awaiting block…"}
             {phase === "waiting"    && "Tx confirmed — LLM inference starting…"}
           </p>

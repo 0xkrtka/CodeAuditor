@@ -3,25 +3,34 @@
 import { useState, useCallback, useRef } from "react";
 import {
   useAccount,
-  useWriteContract,
   useSendTransaction,
   usePublicClient,
   useReadContract,
   useSwitchChain,
+  useWalletClient,
 } from "wagmi";
-import { decodeEventLog, encodeFunctionData, parseEther } from "viem";
+import {
+  encodeAbiParameters,
+  parseAbiParameters,
+  decodeAbiParameters,
+  keccak256,
+  toHex,
+  parseEther,
+} from "viem";
 import {
   CODE_AUDITOR_ABI,
   ERC20_ABI,
-  buildSseUrl,
   ritualChain,
   KNOWN_EXECUTOR,
+  RITUAL_CONTRACTS,
 } from "@/lib/ritual";
+
+// ─── Ritual Streaming Service ─────────────────────────────────────────────────
+const STREAMING_SERVICE_URL = "https://streaming.ritualfoundation.org";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 export type AuditPhase =
   | "idle"
-  | "approving"
   | "submitting"
   | "waiting"
   | "streaming"
@@ -30,169 +39,345 @@ export type AuditPhase =
 
 export interface AuditState {
   phase:         AuditPhase;
-  streamedText:  string;       // tokens arriving via SSE
-  auditId:       bigint | null;
-  jobId:         string | null;
+  streamedText:  string;
   severityScore: number | null;
   error:         string | null;
   txHash:        string | null;
-  tokenCount:    number;        // how many SSE tokens received
+  tokenCount:    number;
 }
 
 const INITIAL_STATE: AuditState = {
   phase:         "idle",
   streamedText:  "",
-  auditId:       null,
-  jobId:         null,
   severityScore: null,
   error:         null,
   txHash:        null,
   tokenCount:    0,
 };
 
+// ─── 30-Field LLM Payload Encoder ────────────────────────────────────────────
+// Per Ritual docs (ritual-dapp-llm SKILL.md Section 1):
+// "Always call precompile 0x0802 with the full 30-field ABI tuple."
+function encodeLLMPayload(
+  executor: `0x${string}`,
+  messagesJson: string,
+  streaming: boolean,
+): `0x${string}` {
+  return encodeAbiParameters(
+    parseAbiParameters([
+      "address, bytes[], uint256, bytes[], bytes,",
+      "string, string, int256, string, bool, int256, string, string,",
+      "uint256, bool, int256, string, bytes, int256, string, string, bool,",
+      "int256, bytes, bytes, int256, int256, string, bool,",
+      "(string,string,string)",
+    ].join("")),
+    [
+      executor,               // (1)  executor — TEE node address
+      [],                     // (2)  encryptedSecrets
+      300n,                   // (3)  ttl — 300 blocks (~105s, safe for GLM reasoning)
+      [],                     // (4)  secretSignatures
+      "0x",                   // (5)  userPublicKey
+      messagesJson,           // (6)  messagesJson
+      "zai-org/GLM-4.7-FP8", // (7)  model — only confirmed live model on Ritual
+      0n,                     // (8)  frequencyPenalty
+      "",                     // (9)  logitBiasJson
+      false,                  // (10) logprobs
+      4096n,                  // (11) maxCompletionTokens — ≥4096 required for GLM reasoning model
+      "",                     // (12) metadataJson
+      "",                     // (13) modalitiesJson
+      1n,                     // (14) n
+      true,                   // (15) parallelToolCalls
+      0n,                     // (16) presencePenalty
+      "medium",               // (17) reasoningEffort
+      "0x",                   // (18) responseFormatData
+      -1n,                    // (19) seed (null)
+      "auto",                 // (20) serviceTier
+      "",                     // (21) stopJson
+      streaming,              // (22) stream — true enables SSE
+      700n,                   // (23) temperature (0.7 × 1000)
+      "0x",                   // (24) toolChoiceData
+      "0x",                   // (25) toolsData
+      -1n,                    // (26) topLogprobs (null)
+      1000n,                  // (27) topP (1.0 × 1000)
+      "",                     // (28) user
+      false,                  // (29) piiEnabled
+      ["", "", ""],           // (30) convoHistory — empty StorageRef
+    ],
+  ) as `0x${string}`;
+}
+
+// ─── Audit Prompt Builder ──────────────────────────────────────────────────────
+function buildAuditMessages(contractCode: string): string {
+  return JSON.stringify([
+    {
+      role: "system",
+      content:
+        "You are a senior Solidity security auditor. Respond with:\nSEVERITY_SCORE: [0-100]\nSUMMARY: [2 sentences]\nFINDINGS:\n[numbered list with severity]\nRECOMMENDATIONS:\n[fixes]",
+    },
+    {
+      role: "user",
+      content: `Audit this contract:\n\`\`\`solidity\n${contractCode}\n\`\`\``,
+    },
+  ]);
+}
+
+// ─── LLM Result Extractor from PrecompileCalled event ───────────────────────
+// Per docs Section 2: result lives in PrecompileCalled(address,bytes,bytes) event
+const PRECOMPILE_CALLED_TOPIC = keccak256(
+  toHex("PrecompileCalled(address,bytes,bytes)"),
+);
+
+function extractLLMResultFromReceipt(receipt: any): `0x${string}` | null {
+  for (const log of receipt.logs) {
+    if (log.topics[0] !== PRECOMPILE_CALLED_TOPIC) continue;
+    try {
+      const [addr, , output] = decodeAbiParameters(
+        parseAbiParameters("address, bytes, bytes"),
+        log.data,
+      );
+      if (
+        (addr as string).toLowerCase() !==
+        RITUAL_CONTRACTS.LLM_PRECOMPILE.toLowerCase()
+      )
+        continue;
+      // Unwrap async envelope: (bytes simmedInput, bytes actualOutput)
+      try {
+        const [, actual] = decodeAbiParameters(
+          parseAbiParameters("bytes, bytes"),
+          output as `0x${string}`,
+        );
+        return actual as `0x${string}`;
+      } catch {
+        return output as `0x${string}`;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+// ─── Decode LLM text content from ABI-encoded completionData ─────────────────
+function decodeLLMContent(actualOutput: `0x${string}`): {
+  text: string;
+  hasError: boolean;
+  errorMessage: string;
+} {
+  try {
+    const decoded = decodeAbiParameters(
+      parseAbiParameters(
+        "bool, bytes, bytes, string, (string,string,string)",
+      ),
+      actualOutput,
+    );
+    const hasError    = decoded[0] as boolean;
+    const completionData = decoded[1] as `0x${string}`;
+    const errorMsg    = decoded[3] as string;
+
+    if (hasError) return { text: "", hasError: true, errorMessage: errorMsg };
+    if (!completionData || completionData === "0x")
+      return { text: "", hasError: false, errorMessage: "" };
+
+    const completionDecoded = decodeAbiParameters(
+      parseAbiParameters(
+        "string, string, uint256, string, string, string, uint256, bytes[], bytes",
+      ),
+      completionData,
+    );
+    const choicesData = completionDecoded[7] as `0x${string}`[];
+    if (!choicesData.length) return { text: "", hasError: false, errorMessage: "" };
+
+    const [, , messageData] = decodeAbiParameters(
+      parseAbiParameters("uint256, string, bytes"),
+      choicesData[0],
+    );
+    const [content] = decodeAbiParameters(
+      parseAbiParameters("string, string, string, uint256, bytes[]"),
+      messageData as `0x${string}`,
+    );
+    return { text: content as string, hasError: false, errorMessage: "" };
+  } catch {
+    return { text: "", hasError: false, errorMessage: "" };
+  }
+}
+
+// ─── Parse severity score from audit text ─────────────────────────────────────
+function parseSeverityScore(text: string): number | null {
+  const match = text.match(/SEVERITY_SCORE:\s*(\d+)/i);
+  if (match) {
+    const score = parseInt(match[1], 10);
+    return Math.min(100, Math.max(0, score));
+  }
+  return null;
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useAudit(
-  auditorAddress:  `0x${string}`,
-  paymentToken:    `0x${string}`,
+  _auditorAddress: `0x${string}`,  // kept for API compat; not used for LLM call
+  _paymentToken:   `0x${string}`,  // kept for API compat
 ) {
   const { address: userAddress, chain } = useAccount();
-  const { switchChainAsync } = useSwitchChain();
-  const publicClient = usePublicClient();
-  const sseRef = useRef<EventSource | null>(null);
+  const { switchChainAsync }            = useSwitchChain();
+  const { data: walletClient }          = useWalletClient();
+  const publicClient                    = usePublicClient();
+  const abortRef                        = useRef<AbortController | null>(null);
 
   const [state, setState] = useState<AuditState>(INITIAL_STATE);
 
-  // useWriteContract — for ERC-20 approve only (no precompile involved)
-  const { writeContractAsync } = useWriteContract();
-
-  // useSendTransaction — for requestAudit which internally calls LLM precompile 0x0802.
-  // Per Ritual docs: wagmi's writeContractAsync runs eth_call simulation first,
-  // which always reverts on async precompiles. useSendTransaction bypasses simulation.
+  // useSendTransaction — sends raw tx directly to 0x0802 precompile.
+  // Per Ritual docs: NEVER use writeContractAsync for LLM calls.
+  // writeContractAsync runs eth_call simulation which ALWAYS reverts on async precompiles.
   const { sendTransactionAsync } = useSendTransaction();
 
-  // ── Read current audit fee ────────────────────────────────────────────────
+  // ─── Audit fee (kept for UI display only, payment bypassed) ──────────────
   const { data: auditFee } = useReadContract({
-    address:      auditorAddress,
+    address:      _auditorAddress,
     abi:          CODE_AUDITOR_ABI,
     functionName: "auditFee",
-    chainId:      ritualChain.id,   // ← always read from Ritual, not wallet chain
-    query: { enabled: auditorAddress !== "0x0000000000000000000000000000000000000000" },
-  });
-
-  // ── Read current allowance ────────────────────────────────────────────────
-  const { data: currentAllowance } = useReadContract({
-    address:      paymentToken,
-    abi:          ERC20_ABI,
-    functionName: "allowance",
-    chainId:      ritualChain.id,   // ← always read from Ritual
-    args: userAddress ? [userAddress, auditorAddress] : undefined,
-    query: { enabled: !!userAddress && paymentToken !== "0x0000000000000000000000000000000000000000" },
-  });
-
-  // ── Read user token balance ───────────────────────────────────────────────
-  const { data: tokenBalance } = useReadContract({
-    address:      paymentToken,
-    abi:          ERC20_ABI,
-    functionName: "balanceOf",
     chainId:      ritualChain.id,
-    args: userAddress ? [userAddress] : undefined,
-    query: { enabled: !!userAddress && paymentToken !== "0x0000000000000000000000000000000000000000" },
+    query: {
+      enabled:
+        _auditorAddress !== "0x0000000000000000000000000000000000000000",
+    },
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  SSE: Open stream and collect tokens
+  //  SSE Streaming via fetch() + EIP-712 auth
+  //  Per Ritual docs: cannot use browser EventSource (no custom header support).
+  //  Use fetch() with ReadableStream + Authorization + X-Timestamp headers.
   // ─────────────────────────────────────────────────────────────────────────
-  const openSseStream = useCallback((jobId: string) => {
-    // Close any existing stream
-    if (sseRef.current) {
-      sseRef.current.close();
-      sseRef.current = null;
-    }
+  const openSseStream = useCallback(
+    async (txHash: `0x${string}`) => {
+      if (!walletClient) return;
 
-    // Try backend proxy first (avoids CORS), fallback to direct Ritual RPC
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-    const proxyUrl   = `${backendUrl}/sse/${jobId}`;
-    const directUrl  = buildSseUrl(jobId);
-
-    let es: EventSource;
-    try {
-      es = new EventSource(proxyUrl);
-    } catch {
-      es = new EventSource(directUrl);
-    }
-    sseRef.current = es;
-
-    // Handle token events — { token: string, sig: string } per Ritual SSE spec
-    es.addEventListener("token", (e) => {
+      // Sign EIP-712 stream request
+      // Domain: { name, version, chainId } — NO verifyingContract per docs
+      const timestamp = BigInt(Math.floor(Date.now() / 1000));
+      let signature: `0x${string}`;
       try {
-        const payload = JSON.parse(e.data) as { token: string; sig: string };
-        setState((prev) => ({
-          ...prev,
-          streamedText: prev.streamedText + payload.token,
-          tokenCount:   prev.tokenCount + 1,
-        }));
-      } catch {
-        // plain text fallback
-        setState((prev) => ({
-          ...prev,
-          streamedText: prev.streamedText + e.data,
-          tokenCount:   prev.tokenCount + 1,
-        }));
+        signature = await walletClient.signTypedData({
+          domain: {
+            name:    "Ritual Streaming Service",
+            version: "1",
+            chainId: ritualChain.id,
+          },
+          types: {
+            StreamRequest: [
+              { name: "txHash",    type: "bytes32" },
+              { name: "timestamp", type: "uint256" },
+            ],
+          },
+          primaryType: "StreamRequest",
+          message: { txHash, timestamp },
+        });
+      } catch (err) {
+        console.warn("[SSE] EIP-712 sign failed, will try without auth:", err);
+        // Fallback: try unauthenticated (some executors don't require auth)
+        signature = "0x" as `0x${string}`;
       }
-    });
 
-    // Handle complete event
-    es.addEventListener("complete", (e) => {
-      es.close();
-      sseRef.current = null;
+      // Abort any previous stream
+      if (abortRef.current) abortRef.current.abort();
+      const abortController = new AbortController();
+      abortRef.current = abortController;
 
-      setState((prev) => {
-        const fullText  = prev.streamedText + (e.data ?? "");
-        const match     = fullText.match(/SEVERITY_SCORE:\s*(\d+)/);
-        const score     = match ? Math.min(100, parseInt(match[1])) : prev.severityScore;
-        return {
-          ...prev,
-          phase:         "complete",
-          streamedText:  fullText.trim() !== prev.streamedText.trim() ? fullText : prev.streamedText,
-          severityScore: score,
-        };
-      });
-    });
+      setState((prev) => ({ ...prev, phase: "streaming" }));
 
-    // Handle SSE error (Ritual testnet may have delays — treat as "done")
-    es.onerror = () => {
-      es.close();
-      sseRef.current = null;
-      setState((prev) => ({
-        ...prev,
-        // If we already have text, mark as complete; otherwise wait for on-chain result
-        phase: prev.streamedText.length > 0 ? "complete" : "complete",
-        severityScore: prev.severityScore ?? (() => {
-          const m = prev.streamedText.match(/SEVERITY_SCORE:\s*(\d+)/);
-          return m ? parseInt(m[1]) : null;
-        })(),
-      }));
-    };
+      const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${txHash}`;
+      console.log("[SSE] Connecting to:", streamUrl);
 
-    // Timeout fallback: if no tokens in 30s, close stream gracefully
-    const timeout = setTimeout(() => {
-      if (sseRef.current === es) {
-        es.close();
-        sseRef.current = null;
-        setState((prev) => ({
-          ...prev,
-          phase: "complete",
-          error: prev.streamedText ? null : "Stream timeout — check on-chain result via Explorer",
-        }));
+      try {
+        const response = await fetch(streamUrl, {
+          headers: {
+            Accept:          "text/event-stream",
+            Authorization:   `Bearer ${signature}`,
+            "X-Timestamp":   timestamp.toString(),
+          },
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          console.warn(`[SSE] HTTP ${response.status} — stream unavailable, result from receipt.`);
+          return;
+        }
+
+        const reader  = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let   buffer  = "";
+        let   fullText = "";
+
+        const timeout = setTimeout(() => {
+          abortController.abort();
+          console.warn("[SSE] Stream timeout after 120s");
+        }, 120_000);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop()!;
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+            const data = trimmed.slice(6);
+
+            if (data === "[DONE]") {
+              clearTimeout(timeout);
+              setState((prev) => ({
+                ...prev,
+                phase:         "complete",
+                severityScore: parseSeverityScore(prev.streamedText),
+              }));
+              return;
+            }
+
+            try {
+              const event = JSON.parse(data);
+              if (event.token) {
+                fullText += event.token;
+                setState((prev) => ({
+                  ...prev,
+                  streamedText: prev.streamedText + event.token,
+                  tokenCount:   prev.tokenCount + 1,
+                }));
+              }
+              if (event.done) {
+                clearTimeout(timeout);
+                setState((prev) => ({
+                  ...prev,
+                  phase:         "complete",
+                  severityScore: parseSeverityScore(prev.streamedText),
+                }));
+                return;
+              }
+            } catch {
+              /* skip non-JSON lines */
+            }
+          }
+        }
+
+        clearTimeout(timeout);
+        if (fullText) {
+          setState((prev) => ({
+            ...prev,
+            phase:         "complete",
+            severityScore: parseSeverityScore(fullText),
+          }));
+        }
+      } catch (err: any) {
+        if (err.name === "AbortError") return;
+        console.warn("[SSE] Stream error:", err.message);
+        // Don't set error — receipt fallback below handles this
       }
-    }, 90_000);
-
-    es.addEventListener("complete", () => clearTimeout(timeout));
-    es.addEventListener("error",    () => clearTimeout(timeout));
-  }, []);
+    },
+    [walletClient],
+  );
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  Main: submit audit
+  //  Main: submit audit — sends directly to LLM precompile 0x0802
   // ─────────────────────────────────────────────────────────────────────────
   const submitAudit = useCallback(
     async (contractCode: string) => {
@@ -200,157 +385,172 @@ export function useAudit(
         setState((prev) => ({ ...prev, error: "Connect your wallet first" }));
         return;
       }
-      // Use fetched fee, or fall back to 1 mRITUAL if the read is still loading
-      const fee = auditFee ?? parseEther("1");
-      if (auditFee === undefined) {
-        console.warn("auditFee not loaded yet — using default 1 mRITUAL");
-      }
       if (!publicClient) {
         setState((prev) => ({ ...prev, error: "Public client not available" }));
         return;
       }
+      if (!contractCode.trim()) {
+        setState((prev) => ({ ...prev, error: "Paste your Solidity code first" }));
+        return;
+      }
 
-      setState({
-        ...INITIAL_STATE,
-        phase: "approving",
-      });
+      setState({ ...INITIAL_STATE, phase: "submitting" });
 
       try {
-        // ── Step 0: Switch network if needed ──────────────────────────────
+        // ── Step 0: Ensure Ritual Chain ──────────────────────────────────
         if (chain?.id !== ritualChain.id) {
           if (!switchChainAsync) {
-            throw new Error("Wrong network. Please switch to Ritual Chain in MetaMask.");
+            throw new Error(
+              "Wrong network. Please switch to Ritual Chain (Chain ID: 1979) in MetaMask.",
+            );
           }
           await switchChainAsync({ chainId: ritualChain.id });
         }
 
-        // ── Step 1: Approve payment token if needed ──────────────────────
-        const needsApprove =
-          !currentAllowance || currentAllowance < fee;
+        // ── Step 1: Encode 30-field LLM payload ─────────────────────────
+        // Per Ritual docs: send DIRECTLY to 0x0802 — NOT through a contract.
+        // Calling 0x0802 via Solidity (contract.call) causes MetaMask simulation
+        // to always revert because eth_call cannot simulate async precompiles.
+        const messagesJson = buildAuditMessages(contractCode);
+        const payload      = encodeLLMPayload(KNOWN_EXECUTOR, messagesJson, true); // stream=true
 
-        if (needsApprove) {
-          const approveTx = await writeContractAsync({
-            address:      paymentToken,
-            abi:          ERC20_ABI,
-            functionName: "approve",
-            args:         [auditorAddress, fee],
-            chainId:      ritualChain.id,
-          });
+        console.log("[Audit] Sending tx to LLM precompile 0x0802...");
+        console.log("[Audit] Executor:", KNOWN_EXECUTOR);
 
-          setState((prev) => ({ ...prev, txHash: approveTx }));
-
-          // Wait for approve receipt
-          await publicClient.waitForTransactionReceipt({
-            hash:               approveTx,
-            confirmations:      1,
-            pollingInterval:    500, // Ritual ~350ms blocks
-          });
-        }
-
-        // ── Step 2: Submit audit tx ──────────────────────────────────────
-        // IMPORTANT: Use sendTransactionAsync (not writeContractAsync) because
-        // requestAudit internally calls LLM precompile 0x0802 (async).
-        // writeContractAsync runs eth_call simulation first, which always
-        // reverts on Ritual async precompiles.
-        // v4: pass executor explicitly — KNOWN_EXECUTOR is a verified active TEE node.
-        // Passing address(0) would use defaultExecutor from contract, but if that's
-        // ever zero the tx reverts with NoExecutor(). Explicit is safer.
-        const auditData = encodeFunctionData({
-          abi:          CODE_AUDITOR_ABI,
-          functionName: "requestAudit",
-          args:         [contractCode, KNOWN_EXECUTOR],
-        });
-
+        // ── Step 2: Send tx directly to 0x0802 ──────────────────────────
+        // Gas: 3M is sufficient. Inference is off-chain, gas only covers on-chain commitment.
         const auditTx = await sendTransactionAsync({
-          to:   auditorAddress,
-          data: auditData,
-          gas:  5_000_000n,  // 5M gas — Ritual docs recommend 5M for full LLM inference
+          to:      RITUAL_CONTRACTS.LLM_PRECOMPILE,
+          data:    payload,
+          gas:     3_000_000n,
           chainId: ritualChain.id,
         });
 
-        setState((prev) => ({ ...prev, txHash: auditTx, phase: "waiting" }));
+        console.log("[Audit] Tx submitted:", auditTx);
+        setState((prev) => ({
+          ...prev,
+          txHash: auditTx,
+          phase:  "waiting",
+        }));
 
-        // ── Step 3: Wait for receipt and parse AuditRequested event ─────
+        // ── Step 3: Open SSE stream immediately (async, non-blocking) ────
+        // Per docs: connect SSE right after tx, tokens arrive during settlement.
+        openSseStream(auditTx); // don't await — streaming runs concurrently
+
+        // ── Step 4: Wait for receipt and extract result as fallback ──────
+        console.log("[Audit] Waiting for receipt...");
         const receipt = await publicClient.waitForTransactionReceipt({
           hash:            auditTx,
           confirmations:   1,
           pollingInterval: 500,
+          timeout:         120_000,
         });
 
-        // Parse AuditRequested event log to get real jobId
-        let auditId: bigint | null = null;
-        let jobId: string | null   = null;
+        console.log("[Audit] Receipt received, status:", receipt.status);
 
-        for (const log of receipt.logs) {
-          try {
-            const decoded = decodeEventLog({
-              abi:    CODE_AUDITOR_ABI,
-              data:   log.data,
-              topics: log.topics,
+        if (receipt.status === "reverted") {
+          setState((prev) => ({
+            ...prev,
+            phase: "error",
+            error: "Transaction reverted on-chain. Check RitualWallet balance and try again.",
+          }));
+          return;
+        }
+
+        // Extract result from PrecompileCalled event (settlement receipt)
+        const llmResult = extractLLMResultFromReceipt(receipt);
+
+        if (llmResult) {
+          console.log("[Audit] LLM result found in receipt, decoding...");
+          const { text, hasError, errorMessage } = decodeLLMContent(llmResult);
+
+          if (hasError) {
+            console.warn("[Audit] LLM error:", errorMessage);
+            // Don't override stream — stream may already have text
+            setState((prev) => {
+              if (prev.phase === "complete" || prev.streamedText.length > 100) return prev;
+              return {
+                ...prev,
+                phase: "error",
+                error: `LLM inference error: ${errorMessage}`,
+              };
             });
-            if (decoded.eventName === "AuditRequested") {
-              const args = decoded.args as { auditId: bigint; requester: `0x${string}`; jobId: `0x${string}`; timestamp: bigint };
-              auditId = args.auditId;
-              jobId   = args.jobId; // real bytes32 jobId from contract
-              break;
-            }
-          } catch {
-            // Not our event, skip
+          } else if (text) {
+            // Use receipt text only if stream didn't deliver content
+            setState((prev) => {
+              if (prev.streamedText.length > 50) return prev; // stream won
+              return {
+                ...prev,
+                phase:         "complete",
+                streamedText:  text,
+                severityScore: parseSeverityScore(text),
+              };
+            });
+          } else {
+            // No content yet — commitment phase, stream should deliver
+            console.log("[Audit] No content in receipt yet — stream delivering tokens...");
           }
+        } else {
+          // No PrecompileCalled event — tx is in commitment phase
+          // Stream will deliver tokens as executor settles
+          console.log("[Audit] No PrecompileCalled event — waiting for stream...");
+          setState((prev) => {
+            if (prev.phase === "streaming" || prev.phase === "complete") return prev;
+            return { ...prev, phase: "streaming" };
+          });
+        }
+      } catch (err: any) {
+        console.error("[Audit] Error:", err);
+
+        let errorMsg: string = err?.message ?? "Unknown error";
+
+        // Parse common MetaMask / RPC errors
+        if (errorMsg.includes("User rejected") || errorMsg.includes("user rejected")) {
+          errorMsg = "Transaction rejected by user.";
+        } else if (errorMsg.includes("insufficient funds") || errorMsg.includes("insufficient balance")) {
+          errorMsg = "Insufficient RITUAL for gas fees.";
+        } else if (errorMsg.includes("sender locked")) {
+          errorMsg = "Previous audit still in progress. Please wait a few seconds and try again.";
+        } else if (errorMsg.includes("insufficient wallet balance")) {
+          errorMsg = "Contract RitualWallet balance too low. Please contact the dApp owner to top up.";
         }
 
-        // Fallback: use txHash as jobId if parsing fails (testnet edge case)
-        if (!jobId) {
-          jobId = auditTx;
-          console.warn("Could not parse AuditRequested event; using txHash as fallback jobId");
-        }
-
-        setState((prev) => ({
-          ...prev,
-          phase:   "streaming",
-          auditId,
-          jobId,
-        }));
-
-        // ── Step 4: Open SSE stream ──────────────────────────────────────
-        openSseStream(jobId);
-
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
         setState((prev) => ({
           ...prev,
           phase: "error",
-          error: msg.includes("User rejected") || msg.includes("user rejected")
-            ? "Transaction rejected by user"
-            : msg.slice(0, 200),
+          error: errorMsg,
         }));
       }
     },
     [
       userAddress,
-      auditFee,
-      currentAllowance,
-      auditorAddress,
-      paymentToken,
+      chain,
       publicClient,
-      writeContractAsync,
+      sendTransactionAsync,
+      switchChainAsync,
       openSseStream,
-    ]
+    ],
   );
 
+  // ─── Reset ────────────────────────────────────────────────────────────────
   const reset = useCallback(() => {
-    if (sseRef.current) {
-      sseRef.current.close();
-      sseRef.current = null;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
     }
     setState(INITIAL_STATE);
   }, []);
 
   return {
-    ...state,
-    auditFee,
-    tokenBalance,
+    phase:         state.phase,
+    streamedText:  state.streamedText,
+    severityScore: state.severityScore,
+    error:         state.error,
+    txHash:        state.txHash,
+    tokenCount:    state.tokenCount,
     submitAudit,
     reset,
+    auditFee,
+    userAddress,
   };
 }

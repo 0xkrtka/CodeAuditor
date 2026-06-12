@@ -65,11 +65,10 @@ function shortenAddr(addr: string) {
 }
 
 const PHASES = [
-  { key: "approving",  label: "Approve Token",    icon: "ti-coin"           },
-  { key: "submitting", label: "Submit Tx",         icon: "ti-send"           },
-  { key: "waiting",    label: "Confirming",        icon: "ti-loader-2"       },
-  { key: "streaming",  label: "AI Streaming",      icon: "ti-broadcast"      },
-  { key: "complete",   label: "Complete",          icon: "ti-circle-check"   },
+  { key: "submitting", label: "Sending Tx",      icon: "ti-send"           },
+  { key: "waiting",    label: "Confirming",       icon: "ti-loader-2"       },
+  { key: "streaming",  label: "AI Streaming",     icon: "ti-broadcast"      },
+  { key: "complete",   label: "Complete",         icon: "ti-circle-check"   },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -110,10 +109,8 @@ export function AuditForm() {
     streamedText,
     severityScore,
     txHash,
-    jobId,
     error,
     auditFee,
-    tokenBalance,
     tokenCount,
     submitAudit,
     reset,
@@ -149,9 +146,9 @@ export function AuditForm() {
     await submitAudit(code);
   }
 
-  // Determine button state
-  const notDeployed = AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000"
-    || PAYMENT_TOKEN === "0x0000000000000000000000000000000000000000";
+  // Deployment check — only auditor address required now (payment handled by RitualWallet)
+  const notDeployed =
+    AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
 
   const btnDisabled =
     !isConnected || !code.trim() || isOverLimit || notDeployed;
@@ -212,19 +209,6 @@ export function AuditForm() {
             </span>
           )}
 
-          {isConnected && tokenBalance !== undefined && (
-            <span style={{
-              fontSize: 12,
-              padding: "4px 10px",
-              borderRadius: "var(--radius-full)",
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--bg-border)",
-              color: "var(--text-tertiary)",
-              fontFamily: "var(--font-mono)",
-            }}>
-              Balance: {formatUnits(tokenBalance, 18)} mRITUAL
-            </span>
-          )}
 
           {/* Mint test tokens button — only shown when contract is deployed */}
           {isConnected && !notDeployed && (
@@ -458,7 +442,6 @@ export function AuditForm() {
         streamedText={streamedText}
         severityScore={severityScore}
         txHash={txHash}
-        jobId={jobId}
         onReset={reset}
       />
     </div>
