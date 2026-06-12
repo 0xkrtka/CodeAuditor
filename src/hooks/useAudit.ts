@@ -338,8 +338,6 @@ export function useAudit(
       const abortController = new AbortController();
       abortRef.current = abortController;
 
-      setState((prev) => ({ ...prev, phase: "streaming" }));
-
       const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${txHash}`;
       console.log("[SSE] Connecting to:", streamUrl);
 
@@ -490,11 +488,7 @@ export function useAudit(
           phase:  "waiting",
         }));
 
-        // ── Step 3: Open SSE stream immediately (async, non-blocking) ────
-        // Per docs: connect SSE right after tx, tokens arrive during settlement.
-        openSseStream(auditTx); // don't await — streaming runs concurrently
-
-        // ── Step 4: Wait for receipt and extract result as fallback ──────
+        // ── Step 3: Wait for receipt and extract result as fallback ──────
         console.log("[Audit] Waiting for receipt...");
         const receipt = await publicClient.waitForTransactionReceipt({
           hash:            auditTx,
@@ -513,6 +507,13 @@ export function useAudit(
           }));
           return;
         }
+
+        // ── Step 4: Confirm transaction and initiate SSE streaming ──────
+        setState((prev) => ({
+          ...prev,
+          phase: "streaming",
+        }));
+        openSseStream(auditTx); // stream concurrently
 
         // Extract result from PrecompileCalled event (settlement receipt)
         const llmResult = extractLLMResultFromReceipt(receipt);
