@@ -2,10 +2,10 @@
 
 import { useState, useRef, useCallback } from "react";
 import { useAccount, useConnect, useDisconnect, useWriteContract } from "wagmi";
-import { injected } from "wagmi/connectors";
 import { formatUnits, parseEther } from "viem";
 import { useAudit } from "@/hooks/useAudit";
 import { AuditResult } from "./AuditResult";
+import { wagmiConfig } from "@/app/providers";
 
 // ── Contract addresses from environment ──────────────────────────────────────
 const AUDITOR_ADDRESS = (
@@ -249,7 +249,8 @@ export function AuditForm() {
           style={{ fontSize: 13, padding: "6px 14px" }}
           onClick={isConnected
             ? () => disconnect()
-            : () => connect({ connector: injected() })
+            // wagmi v2: must use the same connector instance from createConfig
+            : () => connect({ connector: wagmiConfig.connectors[0] })
           }
         >
           <i className={`ti ${isConnected ? "ti-logout" : "ti-wallet"}`} aria-hidden="true" />

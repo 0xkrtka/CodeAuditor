@@ -9,10 +9,13 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry:     2,
-      staleTime: 10_000, // 10s — Ritual has fast blocks
+      staleTime: 10_000,
     },
   },
 });
+
+// Singleton connector — must be created once outside component
+const injectedConnector = injected({ shimDisconnect: true });
 
 const wagmiConfig = createConfig({
   chains:     [ritualChain],
@@ -22,15 +25,12 @@ const wagmiConfig = createConfig({
       retryCount: 3,
     }),
   },
-  connectors: [
-    // Use injected() only — works with MetaMask, OKX, Rabby, and any EIP-1193 wallet
-    // This avoids pulling in MetaMask SDK (causes encoding dep warning)
-    injected({ shimDisconnect: true }),
-  ],
-  // Multicall disabled — Ritual testnet may not have multicall3 deployed,
-  // which causes all batched reads to silently fail and return undefined.
+  connectors: [injectedConnector],
+  // Multicall disabled — Ritual testnet may not have multicall3 deployed
   batch: { multicall: false },
 });
+
+export { wagmiConfig };
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (

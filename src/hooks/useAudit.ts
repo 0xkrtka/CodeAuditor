@@ -14,6 +14,7 @@ import {
   ERC20_ABI,
   buildSseUrl,
   ritualChain,
+  KNOWN_EXECUTOR,
 } from "@/lib/ritual";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ export function useAudit(
     address:      paymentToken,
     abi:          ERC20_ABI,
     functionName: "balanceOf",
-    chainId:      ritualChain.id,   // ← always read from Ritual
+    chainId:      ritualChain.id,
     args: userAddress ? [userAddress] : undefined,
     query: { enabled: !!userAddress && paymentToken !== "0x0000000000000000000000000000000000000000" },
   });
@@ -240,13 +241,13 @@ export function useAudit(
         // requestAudit internally calls LLM precompile 0x0802 (async).
         // writeContractAsync runs eth_call simulation first, which always
         // reverts on Ritual async precompiles.
-        // v4: pass executor as 2nd arg (0x0 = use defaultExecutor set in contract)
-        setState((prev) => ({ ...prev, phase: "submitting" }));
-
+        // v4: pass executor explicitly — KNOWN_EXECUTOR is a verified active TEE node.
+        // Passing address(0) would use defaultExecutor from contract, but if that's
+        // ever zero the tx reverts with NoExecutor(). Explicit is safer.
         const auditData = encodeFunctionData({
           abi:          CODE_AUDITOR_ABI,
           functionName: "requestAudit",
-          args:         [contractCode, "0x0000000000000000000000000000000000000000"],
+          args:         [contractCode, KNOWN_EXECUTOR],
         });
 
         const auditTx = await sendTransactionAsync({

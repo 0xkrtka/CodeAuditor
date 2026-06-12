@@ -32,11 +32,13 @@ const MOCK_TOKEN_BYTECODE = "0x60806040523480156200001157600080fd5b5060405162001
 
 // CodeAuditor ABI (functions we need for deploy)
 const CODEAUDITOR_ABI = [
-  "constructor(address paymentToken, uint256 auditFee)",
+  "constructor(address paymentToken, uint256 auditFee, address defaultExecutor)",
   "function auditFee() external view returns (uint256)",
   "function owner() external view returns (address)",
   "function paymentToken() external view returns (address)",
-  "function requestAudit(string calldata contractCode) external returns (uint256 auditId, bytes32 jobId)",
+  "function defaultExecutor() external view returns (address)",
+  "function depositForFees() external payable",
+  "function requestAudit(string calldata contractCode, address executor) external returns (uint256 auditId, bytes32 jobId)",
 ];
 
 // ── Compiled CodeAuditor bytecode ─────────────────────────────────────────────
@@ -231,10 +233,32 @@ contract MockRITUAL {
     wallet
   );
 
-  const auditorContract = await auditorFactory.deploy(tokenAddress, AUDIT_FEE);
+  // ── Executor address (address(0) = no default, pass on each call) ──────────
+  // Use a known TEE executor or leave as 0x0 and pass per-call from frontend
+  const DEFAULT_EXECUTOR = "0x0000000000000000000000000000000000000000";
+
+  const auditorContract = await auditorFactory.deploy(tokenAddress, AUDIT_FEE, DEFAULT_EXECUTOR);
   await auditorContract.waitForDeployment();
   const auditorAddress = await auditorContract.getAddress();
   console.log(`✅  CodeAuditor:      ${auditorAddress}`);
+
+  // ── Step 3: Deposit native RITUAL to fund executor fees ───────────────────
+  // This puts RITUAL into RitualWallet ON BEHALF of the CodeAuditor contract.
+  // Without this, LLM precompile calls revert with "insufficient fees".
+  const nativeBal = await provider.getBalance(wallet.address);
+  const toDeposit = nativeBal > ethers.parseEther("0.1")
+    ? ethers.parseEther("0.05")   // deposit 0.05 RITUAL to start
+    : 0n;
+
+  if (toDeposit > 0n) {
+    console.log(`\n💰  Step 3/3 — Depositing ${ethers.formatEther(toDeposit)} RITUAL to fund executor fees...`);
+    const auditorWithSigner = new ethers.Contract(auditorAddress, CODEAUDITOR_ABI, wallet);
+    const depositTx = await auditorWithSigner.depositForFees({ value: toDeposit });
+    await depositTx.wait();
+    console.log(`✅  Executor fees funded!`);
+  } else {
+    console.log(`\n⚠️   Low balance — skipping depositForFees. Fund manually after deploy.`);
+  }
 
   // ── Write .env.local ───────────────────────────────────────────────────────
   const envPath = path.join(__dirname, "../.env.local");
@@ -251,12 +275,14 @@ contract MockRITUAL {
   console.log("\n╔═══════════════════════════════════════════╗");
   console.log("║           ✅  DEPLOYMENT COMPLETE           ║");
   console.log("╚═══════════════════════════════════════════╝");
-  console.log(`\n  CodeAuditor:   ${auditorAddress}`);
+  console.log(`  CodeAuditor:   ${auditorAddress}`);
   console.log(`  Payment Token: ${tokenAddress}`);
   console.log(`  Audit Fee:     ${ethers.formatEther(AUDIT_FEE)} mRITUAL`);
+  console.log(`  Executor:      ${DEFAULT_EXECUTOR} (pass per-call from frontend)`);
   console.log(`  Explorer:      https://explorer.ritualfoundation.org/address/${auditorAddress}`);
   console.log(`\n  📝 .env.local has been written automatically!`);
   console.log(`\n  ▶️  Next step: npm run dev\n`);
+  console.log(`\n  ℹ️  To fund executor fees later, call: node deploy/fund.js\n`);
 }
 
 main().catch((err) => {

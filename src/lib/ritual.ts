@@ -35,6 +35,12 @@ export const RITUAL_CONTRACTS = {
   ASYNC_DELIVERY:      "0x5A16214fF555848411544b005f7Ac063742f39F6" as `0x${string}`,
 } as const;
 
+// ─── Known active TEE executor (verified from ASYNC_DELIVERY on-chain logs) ───
+// This executor has 500k+ transactions and 20M+ RITUAL balance — highly active.
+// Used as fallback if defaultExecutor on contract is address(0).
+// Source: getLogs on ASYNC_DELIVERY contract, cross-checked with RitualWallet balance.
+export const KNOWN_EXECUTOR = "0x27E4Ddaaea7b54dA3Ef4997441493d9f0D3f4Aa5" as `0x${string}`;
+
 // ─── SSE endpoint for streaming LLM tokens ───────────────────────────────────
 export const SSE_BASE_URL = "https://rpc.ritualfoundation.org/sse";
 
