@@ -108,7 +108,7 @@ export function AuditForm() {
     setDepositMsg(null);
     try {
       await depositFees();
-      setDepositMsg("✅ 0.5 RITUAL successfully deposited to RitualWallet!");
+      setDepositMsg("✅ 0.2 RITUAL successfully deposited to RitualWallet!");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setDepositMsg(msg.includes("rejected") ? "❌ Transaction rejected" : "❌ Deposit failed");
@@ -437,7 +437,7 @@ export function AuditForm() {
             disabled={depositing}
           >
             <i className={depositing ? "ti ti-loader animate-spin" : "ti ti-wallet-handshake"} aria-hidden="true" />
-            {depositing ? "Depositing 0.5 RITUAL..." : "Deposit 0.5 RITUAL to RitualWallet"}
+            {depositing ? "Depositing 0.2 RITUAL..." : "Deposit 0.2 RITUAL to RitualWallet"}
           </button>
 
           {depositMsg && (

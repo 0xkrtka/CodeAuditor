@@ -248,7 +248,7 @@ export function useAudit(
     },
   });
 
-  // ─── Deposit 0.5 RITUAL to RitualWallet ──────────────────────────────────────
+  // ─── Deposit 0.2 RITUAL to RitualWallet (plain transfer — contract uses receive()) ──
   const depositFees = useCallback(async () => {
     if (!userAddress || !walletClient) {
       throw new Error("Wallet not connected");
@@ -261,22 +261,11 @@ export function useAudit(
       await switchChainAsync({ chainId: ritualChain.id });
     }
 
-    const data = encodeFunctionData({
-      abi: [{
-        name: 'deposit',
-        type: 'function',
-        stateMutability: 'payable',
-        inputs: [{ name: 'lockDuration', type: 'uint256' }],
-        outputs: [],
-      }] as const,
-      functionName: 'deposit',
-      args: [5000n],
-    });
-
+    // RitualWallet only has receive() — deposit by sending native RITUAL with no calldata
     const tx = await sendTransactionAsync({
       to:      RITUAL_CONTRACTS.RITUAL_WALLET,
-      data,
-      value:   parseEther("0.5"),
+      data:    "0x",
+      value:   parseEther("0.2"),
       chainId: ritualChain.id,
     });
 
