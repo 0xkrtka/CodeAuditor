@@ -36,3 +36,5 @@ npm-debug.log*
 
 # Deploy scripts containing private keys
 deploy/rescue.js
+
+.vercel

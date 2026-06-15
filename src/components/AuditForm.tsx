@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { useAccount, useConnect, useDisconnect, useWriteContract } from "wagmi";
-import { formatUnits, parseEther } from "viem";
+import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { useAudit } from "@/hooks/useAudit";
 import { AuditResult } from "./AuditResult";
 import { wagmiConfig } from "@/app/providers";
@@ -17,20 +16,6 @@ const PAYMENT_TOKEN = (
   process.env.NEXT_PUBLIC_PAYMENT_TOKEN ??
   "0x0000000000000000000000000000000000000000"
 ) as `0x${string}`;
-
-// ── Minimal ABI for MockToken mint ───────────────────────────────────────────
-const MOCK_TOKEN_MINT_ABI = [
-  {
-    name: "mint",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "to",     type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-] as const;
 
 // ── Sample vulnerable contract for demo ──────────────────────────────────────
 const SAMPLE_CODE = `// SPDX-License-Identifier: MIT
@@ -76,61 +61,6 @@ export function AuditForm() {
   const { address, isConnected } = useAccount();
   const { connect }    = useConnect();
   const { disconnect } = useDisconnect();
-  const { writeContractAsync } = useWriteContract();
-
-  const [minting, setMinting] = useState(false);
-  const [mintMsg, setMintMsg] = useState<string | null>(null);
-
-  async function handleMint() {
-    if (!address) return;
-    setMinting(true);
-    setMintMsg(null);
-    try {
-      await writeContractAsync({
-        address:      PAYMENT_TOKEN,
-        abi:          MOCK_TOKEN_MINT_ABI,
-        functionName: "mint",
-        args:         [address, parseEther("100")],
-      });
-      setMintMsg("✅ 100 mRITUAL minted to your wallet!");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setMintMsg(msg.includes("rejected") ? "❌ Transaction rejected" : "❌ Mint failed");
-    } finally {
-      setMinting(false);
-    }
-  }
-  const [depositing, setDepositing] = useState(false);
-  const [depositMsg, setDepositMsg] = useState<string | null>(null);
-
-  async function handleDeposit() {
-    setDepositing(true);
-    setDepositMsg(null);
-    try {
-      await depositFees();
-      setDepositMsg("✅ 0.2 RITUAL successfully deposited to RitualWallet!");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setDepositMsg(msg.includes("rejected") ? "❌ Transaction rejected" : "❌ Deposit failed");
-    } finally {
-      setDepositing(false);
-    }
-  }
-
-  const [withdrawing, setWithdrawing] = useState(false);
-
-  async function handleWithdraw() {
-    setWithdrawing(true);
-    try {
-      await withdrawFees();
-      alert("✅ RITUAL successfully withdrawn from RitualWallet back to your wallet!");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert(msg.includes("rejected") ? "❌ Transaction rejected" : `❌ Withdraw failed: ${msg}`);
-    } finally {
-      setWithdrawing(false);
-    }
-  }
 
   const [code, setCode] = useState(SAMPLE_CODE);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -141,13 +71,9 @@ export function AuditForm() {
     severityScore,
     txHash,
     error,
-    auditFee,
     tokenCount,
     submitAudit,
     reset,
-    ritualWalletBalance,
-    depositFees,
-    withdrawFees,
   } = useAudit(AUDITOR_ADDRESS, PAYMENT_TOKEN);
 
   const isActive  = phase !== "idle" && phase !== "error";
@@ -180,14 +106,11 @@ export function AuditForm() {
     await submitAudit(code);
   }
 
-  // Deployment check — only auditor address required now (payment handled by RitualWallet)
   const notDeployed =
     AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
 
-  const isBalanceLow = isConnected && ritualWalletBalance !== undefined && ritualWalletBalance < 350000000000000000n;
-
   const btnDisabled =
-    !isConnected || !code.trim() || isOverLimit || notDeployed || isBalanceLow;
+    !isConnected || !code.trim() || isOverLimit || notDeployed;
 
   const btnLabel = !isConnected
     ? "Connect wallet to audit"
@@ -195,8 +118,6 @@ export function AuditForm() {
     ? "Contract not deployed"
     : isOverLimit
     ? "Code too long (max 32KB)"
-    : isBalanceLow
-    ? "Deposit RITUAL below to audit"
     : "Request On-Chain Audit";
 
   return (
@@ -233,73 +154,23 @@ export function AuditForm() {
             </span>
           </div>
 
-          {isConnected && auditFee !== undefined && (
+          {/* Free audit badge */}
+          {isConnected && (
             <span style={{
               fontSize: 12,
               padding: "4px 10px",
               borderRadius: "var(--radius-full)",
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--bg-border)",
-              color: "var(--text-secondary)",
-              fontFamily: "var(--font-mono)",
-            }}>
-              Fee: {formatUnits(auditFee, 18)} RITUAL
-            </span>
-          )}
-
-          {isConnected && ritualWalletBalance !== undefined && (
-            <span style={{
-              fontSize: 12,
-              padding: "4px 10px",
-              borderRadius: "var(--radius-full)",
-              background: "rgba(139,92,246,0.1)",
-              border: "1px solid rgba(139,92,246,0.25)",
-              color: "var(--ritual-purple-mid)",
+              background: "rgba(16,185,129,0.08)",
+              border: "1px solid rgba(16,185,129,0.25)",
+              color: "var(--color-success)",
               fontFamily: "var(--font-mono)",
               display: "inline-flex",
               alignItems: "center",
-              gap: "8px",
+              gap: 5,
             }}>
-              <span>RitualWallet: {parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(2)} RITUAL</span>
-              {ritualWalletBalance > 0n && (
-                <button
-                  onClick={handleWithdraw}
-                  disabled={withdrawing}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "#f87171", // soft light red/rose
-                    cursor: withdrawing ? "not-allowed" : "pointer",
-                    fontSize: "11px",
-                    fontWeight: "bold",
-                    padding: "0 4px",
-                    textDecoration: "underline",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "2px",
-                  }}
-                  title="Withdraw all RITUAL back to your wallet"
-                >
-                  {withdrawing ? "…" : "Withdraw"}
-                </button>
-              )}
+              <i className="ti ti-gift" style={{ fontSize: 12 }} aria-hidden="true" />
+              Free audit
             </span>
-          )}
-
-
-          {/* Mint test tokens button — only shown when contract is deployed */}
-          {isConnected && !notDeployed && (
-            <button
-              id="mint-token-btn"
-              className="btn btn-ghost"
-              style={{ fontSize: 12, padding: "4px 10px", gap: 4, opacity: minting ? 0.6 : 1 }}
-              onClick={handleMint}
-              disabled={minting}
-              title="Mint 100 mRITUAL test tokens"
-            >
-              <i className="ti ti-coins" aria-hidden="true" />
-              {minting ? "Minting…" : "Mint Tokens"}
-            </button>
           )}
         </div>
 
@@ -310,7 +181,6 @@ export function AuditForm() {
           style={{ fontSize: 13, padding: "6px 14px" }}
           onClick={isConnected
             ? () => disconnect()
-            // wagmi v2: must use the same connector instance from createConfig
             : () => connect({ connector: wagmiConfig.connectors[0] })
           }
         >
@@ -318,22 +188,6 @@ export function AuditForm() {
           {isConnected ? "Disconnect" : "Connect Wallet"}
         </button>
       </div>
-
-      {/* Mint feedback */}
-      {mintMsg && (
-        <div style={{
-          padding: "8px 14px",
-          borderRadius: "var(--radius-md)",
-          background: mintMsg.startsWith("✅") ? "rgba(16,185,129,0.08)" : "var(--color-danger-bg)",
-          border: `1px solid ${mintMsg.startsWith("✅") ? "rgba(16,185,129,0.25)" : "rgba(239,68,68,0.25)"}`,
-          marginBottom: "var(--sp-3)",
-          fontSize: 13,
-          color: mintMsg.startsWith("✅") ? "var(--color-success)" : "var(--color-danger)",
-          animation: "fade-in 200ms ease both",
-        }}>
-          {mintMsg}
-        </div>
-      )}
 
       {/* ── Code Editor ─────────────────────────────────────────────────── */}
       <div style={{ marginBottom: "var(--sp-4)" }}>
@@ -446,52 +300,6 @@ export function AuditForm() {
           <span style={{ fontSize: 13, color: "var(--color-danger)", lineHeight: 1.5 }}>
             {error}
           </span>
-        </div>
-      )}
-
-      {/* ── Low RitualWallet Balance Banner ─────────────────────────────── */}
-      {isConnected && ritualWalletBalance !== undefined && ritualWalletBalance < 350000000000000000n && (
-        <div style={{
-          padding: "16px 20px",
-          borderRadius: "var(--radius-lg)",
-          background: "rgba(245,158,11,0.06)",
-          border: "1px dashed rgba(245,158,11,0.35)",
-          marginBottom: "var(--sp-4)",
-          animation: "fade-in 300ms ease both",
-        }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
-            <i className="ti ti-alert-circle" style={{ fontSize: 20, color: "var(--color-warning)", marginTop: 1 }} aria-hidden="true" />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>
-                RitualWallet Balance is Low ({parseFloat(formatUnits(ritualWalletBalance, 18)).toFixed(4)} RITUAL)
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                Ritual precompiles require a deposit of at least <strong>0.31 RITUAL</strong> to cover worst-case escrow fees per in-flight audit. Please deposit RITUAL to enable audits.
-              </div>
-            </div>
-          </div>
-          
-          <button
-            id="deposit-fees-btn"
-            className="btn btn-secondary"
-            style={{ width: "100%", padding: "10px", fontSize: 13, gap: 6 }}
-            onClick={handleDeposit}
-            disabled={depositing}
-          >
-            <i className={depositing ? "ti ti-loader animate-spin" : "ti ti-wallet-handshake"} aria-hidden="true" />
-            {depositing ? "Depositing 0.2 RITUAL..." : "Deposit 0.2 RITUAL to RitualWallet"}
-          </button>
-
-          {depositMsg && (
-            <div style={{
-              fontSize: 11,
-              marginTop: 8,
-              color: depositMsg.startsWith("❌") ? "var(--color-danger)" : "var(--color-success)",
-              fontFamily: "var(--font-mono)",
-            }}>
-              {depositMsg}
-            </div>
-          )}
         </div>
       )}
 

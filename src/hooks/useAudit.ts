@@ -20,7 +20,6 @@ import {
 } from "viem";
 import {
   CODE_AUDITOR_ABI,
-  ERC20_ABI,
   ritualChain,
   RITUAL_CONTRACTS,
 } from "@/lib/ritual";
@@ -325,17 +324,7 @@ export function useAudit(
     }
   }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance, ritualWalletBalance]);
 
-  // ─── Audit fee (kept for UI display only, payment bypassed) ──────────────
-  const { data: auditFee } = useReadContract({
-    address:      _auditorAddress,
-    abi:          CODE_AUDITOR_ABI,
-    functionName: "auditFee",
-    chainId:      ritualChain.id,
-    query: {
-      enabled:
-        _auditorAddress !== "0x0000000000000000000000000000000000000000",
-    },
-  });
+  // auditFee dihapus — fee = 0, user tidak perlu bayar mRITUAL
 
   // ─────────────────────────────────────────────────────────────────────────
   //  SSE Streaming via fetch() + EIP-712 auth
@@ -501,36 +490,7 @@ export function useAudit(
           await switchChainAsync({ chainId: ritualChain.id });
         }
 
-        // ── Step 1: Handle Payment Token Approval ───────────────────────
-        const fee = auditFee ?? parseEther("1");
-        console.log("[Audit] Checking mRITUAL allowance...");
-        const allowance = await publicClient.readContract({
-          address: _paymentToken,
-          abi: ERC20_ABI,
-          functionName: "allowance",
-          args: [userAddress, _auditorAddress],
-        });
-
-        if (allowance < fee) {
-          console.log("[Audit] Allowance too low. Approving mRITUAL...");
-          setState((prev) => ({ ...prev, error: "Approving mRITUAL payment..." }));
-          
-          const approveData = encodeFunctionData({
-            abi: ERC20_ABI,
-            functionName: "approve",
-            args: [_auditorAddress, fee * 100n],
-          });
-
-          const approveTx = await sendTransactionAsync({
-            to: _paymentToken,
-            data: approveData,
-            chainId: ritualChain.id,
-          });
-
-          console.log("[Audit] Approve tx sent:", approveTx);
-          await publicClient.waitForTransactionReceipt({ hash: approveTx });
-          console.log("[Audit] Approve tx confirmed");
-        }
+        // ── Step 1: DIHAPUS — auditFee = 0, tidak perlu approve mRITUAL ─
 
         // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
         // Per Ritual docs: 0x0802 simulation fails on MetaMask (eth_call reverts).
@@ -656,8 +616,6 @@ export function useAudit(
       switchChainAsync,
       openSseStream,
       _auditorAddress,
-      _paymentToken,
-      auditFee,
     ],
   );
 
@@ -679,7 +637,6 @@ export function useAudit(
     tokenCount:    state.tokenCount,
     submitAudit,
     reset,
-    auditFee,
     userAddress,
     ritualWalletBalance,
     depositFees,
