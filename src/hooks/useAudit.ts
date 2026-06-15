@@ -8,6 +8,7 @@ import {
   useReadContract,
   useSwitchChain,
   useWalletClient,
+  useBlockNumber,
 } from "wagmi";
 import {
   encodeAbiParameters,
@@ -227,9 +228,8 @@ export function useAudit(
   // We pass a manual gas limit to bypass MetaMask simulation of async precompile calls.
   const { sendTransactionAsync } = useSendTransaction();
 
-  // ─── Query CodeAuditor contract's balance in RitualWallet ──────────────────
-  // This is the balance used for executor fees when requestAudit is called.
-  const { data: ritualWalletBalance, refetch: refetchWalletBalance } = useReadContract({
+  // ─── Query user's EOA balance in RitualWallet ──────────────────────────────
+  const { data: userWalletBalance, refetch: refetchUserWalletBalance } = useReadContract({
     address:      RITUAL_CONTRACTS.RITUAL_WALLET,
     abi: [{
       name: "balanceOf",
@@ -240,15 +240,48 @@ export function useAudit(
     }] as const,
     functionName: "balanceOf",
     chainId:      ritualChain.id,
-    args: _auditorAddress ? [_auditorAddress] : undefined,
+    args: userAddress ? [userAddress] : undefined,
     query: {
-      enabled: _auditorAddress !== "0x0000000000000000000000000000000000000000",
+      enabled: !!userAddress,
     },
   });
 
-  // ─── Deposit 0.05 RITUAL to CodeAuditor's RitualWallet for executor fees ──
-  // Calls depositForFees() on CodeAuditor which calls RitualWallet.deposit(lockDuration)
-  // with a 90-day lock. This ensures executor fees are available for LLM audit calls.
+  // ─── Query user's EOA lock block in RitualWallet ───────────────────────────
+  const { data: userWalletLock, refetch: refetchUserWalletLock } = useReadContract({
+    address:      RITUAL_CONTRACTS.RITUAL_WALLET,
+    abi: [{
+      name: "lockUntil",
+      type: "function",
+      stateMutability: "view",
+      inputs: [{ name: "account", type: "address" }],
+      outputs: [{ name: "blockNumber", type: "uint256" }],
+    }] as const,
+    functionName: "lockUntil",
+    chainId:      ritualChain.id,
+    args: userAddress ? [userAddress] : undefined,
+    query: {
+      enabled: !!userAddress,
+    },
+  });
+
+  // ─── Query current block number ────────────────────────────────────────────
+  const { data: currentBlock, refetch: refetchBlockNumber } = useBlockNumber({
+    chainId: ritualChain.id,
+    watch: true,
+  });
+
+  const refetchAllWalletData = useCallback(async () => {
+    await Promise.all([
+      refetchUserWalletBalance(),
+      refetchUserWalletLock(),
+      refetchBlockNumber(),
+    ]);
+  }, [refetchUserWalletBalance, refetchUserWalletLock, refetchBlockNumber]);
+
+  // ─── Deposit/Extend lock for user EOA in RitualWallet ──────────────────────
+  // Calls deposit(lockDuration) directly on RitualWallet for the user's EOA
+  // with a 100,000 block lock duration (~10 hours) to ensure async LLM calls work.
+  // We send a tiny amount (0.01 RITUAL) to extend the lock duration.
   const depositFees = useCallback(async () => {
     if (!userAddress || !walletClient) {
       throw new Error("Wallet not connected");
@@ -261,34 +294,35 @@ export function useAudit(
       await switchChainAsync({ chainId: ritualChain.id });
     }
 
-    // Call depositForFees() on CodeAuditor — it forwards to RitualWallet.deposit(7776000)
+    // Call deposit(100000) on RitualWallet
     const depositData = encodeFunctionData({
       abi: [{
-        name: "depositForFees",
+        name: "deposit",
         type: "function",
         stateMutability: "payable",
-        inputs: [],
+        inputs: [{ name: "lockDuration", type: "uint256" }],
         outputs: [],
       }] as const,
-      functionName: "depositForFees",
+      functionName: "deposit",
+      args: [100000n],
     });
 
     const tx = await sendTransactionAsync({
-      to:      _auditorAddress,
+      to:      RITUAL_CONTRACTS.RITUAL_WALLET,
       data:    depositData,
-      value:   parseEther("0.05"),
+      value:   parseEther("0.01"),
       chainId: ritualChain.id,
     });
 
     if (publicClient) {
       await publicClient.waitForTransactionReceipt({ hash: tx });
-      await refetchWalletBalance();
+      await refetchAllWalletData();
     }
-  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance, _auditorAddress]);
+  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchAllWalletData]);
 
   // ─── Withdraw all funds from RitualWallet ───────────────────────────────────
   const withdrawFees = useCallback(async () => {
-    if (!userAddress || !walletClient || !ritualWalletBalance || ritualWalletBalance === 0n) {
+    if (!userAddress || !walletClient || !userWalletBalance || userWalletBalance === 0n) {
       throw new Error("Wallet not connected or balance is zero");
     }
 
@@ -309,7 +343,7 @@ export function useAudit(
         outputs: [],
       }] as const,
       functionName: 'withdraw',
-      args: [ritualWalletBalance],
+      args: [userWalletBalance],
     });
 
     const tx = await sendTransactionAsync({
@@ -320,9 +354,9 @@ export function useAudit(
 
     if (publicClient) {
       await publicClient.waitForTransactionReceipt({ hash: tx });
-      await refetchWalletBalance();
+      await refetchAllWalletData();
     }
-  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchWalletBalance, ritualWalletBalance]);
+  }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchAllWalletData, userWalletBalance]);
 
   // auditFee dihapus — fee = 0, user tidak perlu bayar mRITUAL
 
@@ -638,7 +672,9 @@ export function useAudit(
     submitAudit,
     reset,
     userAddress,
-    ritualWalletBalance,
+    userWalletBalance,
+    userWalletLock,
+    currentBlock,
     depositFees,
     withdrawFees,
   };

@@ -79,7 +79,13 @@ export function AuditForm() {
     tokenCount,
     submitAudit,
     reset,
+    userWalletBalance,
+    userWalletLock,
+    currentBlock,
+    depositFees,
   } = useAudit(AUDITOR_ADDRESS, PAYMENT_TOKEN);
+
+  const [isActivatingLock, setIsActivatingLock] = useState(false);
 
   const isActive  = phase !== "idle" && phase !== "error";
   const charCount = code.length;
@@ -106,8 +112,25 @@ export function AuditForm() {
     }
   }, []);
 
+  const isWalletLocked =
+    !isConnected ||
+    (userWalletLock !== undefined &&
+      currentBlock !== undefined &&
+      userWalletLock > currentBlock);
+
+  async function handleActivateLock() {
+    try {
+      setIsActivatingLock(true);
+      await depositFees();
+    } catch (err) {
+      console.error("[Lock] Activation failed:", err);
+    } finally {
+      setIsActivatingLock(false);
+    }
+  }
+
   async function handleSubmit() {
-    if (!code.trim() || isOverLimit) return;
+    if (!code.trim() || isOverLimit || !isWalletLocked) return;
     await submitAudit(code);
   }
 
@@ -115,7 +138,7 @@ export function AuditForm() {
     AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
 
   const btnDisabled =
-    !isConnected || !code.trim() || isOverLimit || notDeployed;
+    !isConnected || !code.trim() || isOverLimit || notDeployed || !isWalletLocked || isActivatingLock;
 
   const btnLabel = !isConnected
     ? "Connect wallet to audit"
@@ -123,6 +146,8 @@ export function AuditForm() {
     ? "Contract not deployed"
     : isOverLimit
     ? "Code too long (max 32KB)"
+    : !isWalletLocked
+    ? "Activate wallet lock first"
     : "Request On-Chain Audit";
 
   return (
@@ -175,6 +200,25 @@ export function AuditForm() {
             }}>
               <i className="ti ti-gift" style={{ fontSize: 12 }} aria-hidden="true" />
               Free audit
+            </span>
+          )}
+
+          {/* Lock Status badge */}
+          {isConnected && (
+            <span style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: "var(--radius-full)",
+              background: isWalletLocked ? "rgba(16,185,129,0.08)" : "rgba(245,158,11,0.08)",
+              border: `1px solid ${isWalletLocked ? "rgba(16,185,129,0.25)" : "rgba(245,158,11,0.25)"}`,
+              color: isWalletLocked ? "var(--color-success)" : "var(--color-warning)",
+              fontFamily: "var(--font-mono)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}>
+              <i className={`ti ${isWalletLocked ? "ti-lock" : "ti-lock-open"}`} style={{ fontSize: 12 }} aria-hidden="true" />
+              {isWalletLocked ? "Wallet Lock: Active" : "Wallet Lock: Expired"}
             </span>
           )}
         </div>
@@ -305,6 +349,51 @@ export function AuditForm() {
           <span style={{ fontSize: 13, color: "var(--color-danger)", lineHeight: 1.5 }}>
             {error}
           </span>
+        </div>
+      )}
+
+      {/* ── Lock Warning Banner ────────────────────────────────────────── */}
+      {isConnected && !isWalletLocked && !notDeployed && (phase === "idle" || phase === "error") && (
+        <div style={{
+          padding: "16px 20px",
+          borderRadius: "var(--radius-lg)",
+          background: "rgba(245,158,11,0.06)",
+          border: "1px dashed rgba(245,158,11,0.35)",
+          marginBottom: "var(--sp-4)",
+          animation: "fade-in 300ms ease both",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <i className="ti ti-lock-open" style={{ fontSize: 20, color: "var(--color-warning)", marginTop: 2 }} aria-hidden="true" />
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", textAlign: "left" }}>
+                Ritual Wallet Lock Inactive
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6, marginTop: 4, textAlign: "left" }}>
+                To execute on-chain TEE AI audits, your wallet must lock a small amount of RITUAL in the RitualWallet system. This ensures the TEE executor nodes are compensated for their work.
+              </div>
+            </div>
+          </div>
+          <button
+            className="btn btn-warning"
+            style={{ alignSelf: "flex-start", padding: "8px 16px", fontSize: 13, gap: 8 }}
+            onClick={handleActivateLock}
+            disabled={isActivatingLock}
+          >
+            {isActivatingLock ? (
+              <>
+                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true" />
+                Activating Lock...
+              </>
+            ) : (
+              <>
+                <i className="ti ti-lock" aria-hidden="true" />
+                Activate Lock (Locks 0.01 RITUAL)
+              </>
+            )}
+          </button>
         </div>
       )}
 
