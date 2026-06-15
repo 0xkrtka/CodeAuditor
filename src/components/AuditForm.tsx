@@ -7,14 +7,19 @@ import { AuditResult } from "./AuditResult";
 import { wagmiConfig } from "@/app/providers";
 
 // ── Contract addresses from environment ──────────────────────────────────────
-const AUDITOR_ADDRESS = (
+let AUDITOR_ADDRESS = (
   process.env.NEXT_PUBLIC_AUDITOR_ADDRESS ??
-  "0x0000000000000000000000000000000000000000"
+  "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa"
 ) as `0x${string}`;
+
+// Force override if the env variable points to the old deprecated contract address
+if (AUDITOR_ADDRESS.toLowerCase() === "0x8cadb7a5303450e10ca5bae2a1442b906ec21b7c".toLowerCase()) {
+  AUDITOR_ADDRESS = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+}
 
 const PAYMENT_TOKEN = (
   process.env.NEXT_PUBLIC_PAYMENT_TOKEN ??
-  "0x0000000000000000000000000000000000000000"
+  "0x26c11EB567BB83d2B031af41188ECA7872CaAF07"
 ) as `0x${string}`;
 
 // ── Sample vulnerable contract for demo ──────────────────────────────────────
