@@ -526,12 +526,20 @@ export function useAudit(
 
         // ── Step 1: DIHAPUS — auditFee = 0, tidak perlu approve mRITUAL ─
 
+        // Get initial audit IDs of the user before transaction to detect new records
+        const initialAuditIds = await publicClient.readContract({
+          address: _auditorAddress,
+          abi: CODE_AUDITOR_ABI,
+          functionName: "getMyAudits",
+          args: [userAddress],
+        }) as readonly bigint[];
+        const initialCount = initialAuditIds ? initialAuditIds.length : 0;
+        console.log(`[Audit] Initial audit count for ${userAddress}: ${initialCount}`);
+
         // Escape newlines and double quotes for JSON compatibility
         const escapedCode = JSON.stringify(contractCode).slice(1, -1);
 
         // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
-        // Per Ritual docs: 0x0802 simulation fails on MetaMask (eth_call reverts).
-        // To bypass this, call contract with a high manual gas limit (5,000,000).
         const data = encodeFunctionData({
           abi: CODE_AUDITOR_ABI,
           functionName: "requestAudit",
@@ -542,8 +550,8 @@ export function useAudit(
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     500_000n, // Lower manual gas limit to accommodate low user balance (estimate is ~250k)
-          gasPrice: 1_500_000_000n, // Enforce 1.5 gwei gas price (Legacy tx type) to ensure inclusion
+          gas:     500_000n, // Manual gas limit to bypass MetaMask simulation revert issues
+          gasPrice: 1_500_000_000n, // Enforce 1.5 gwei gas price
           chainId: ritualChain.id,
         });
 
@@ -572,7 +580,7 @@ export function useAudit(
               args: [userAddress],
             }) as readonly bigint[];
 
-            if (auditIds && auditIds.length > 0) {
+            if (auditIds && auditIds.length > initialCount) {
               const latestId = auditIds[auditIds.length - 1];
               
               // Fetch latest audit details
@@ -583,23 +591,20 @@ export function useAudit(
                 args: [latestId],
               }) as any;
 
-              // Compare the jobId in the contract with our transaction hash
-              if (audit && audit.jobId && audit.jobId.toLowerCase() === auditTx.toLowerCase()) {
-                if (audit.completed) {
-                  console.log("[Audit] Polling detected completed audit on-chain ID:", latestId.toString());
-                  setState((prev) => {
-                    const newText = audit.auditResult || "";
-                    // Only update if stream has not already fetched more text
-                    if (prev.streamedText.length > newText.length + 50) return prev;
-                    return {
-                      ...prev,
-                      phase: "complete",
-                      streamedText: newText,
-                      severityScore: Number(audit.severityScore),
-                    };
-                  });
-                  return true; // Stop polling
-                }
+              if (audit && audit.completed) {
+                console.log("[Audit] Polling detected completed audit on-chain ID:", latestId.toString());
+                setState((prev) => {
+                  const newText = audit.auditResult || "";
+                  // Only update if stream has not already fetched more text
+                  if (prev.streamedText.length > newText.length + 50) return prev;
+                  return {
+                    ...prev,
+                    phase: "complete",
+                    streamedText: newText,
+                    severityScore: Number(audit.severityScore),
+                  };
+                });
+                return true; // Stop polling
               }
             }
           } catch (pollErr) {
