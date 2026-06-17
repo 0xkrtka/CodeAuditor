@@ -543,6 +543,7 @@ export function useAudit(
           to:      _auditorAddress,
           data,
           gas:     500_000n, // Lower manual gas limit to accommodate low user balance (estimate is ~250k)
+          gasPrice: 1_500_000_000n, // Enforce 1.5 gwei gas price (Legacy tx type) to ensure inclusion
           chainId: ritualChain.id,
         });
 
