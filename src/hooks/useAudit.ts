@@ -542,7 +542,7 @@ export function useAudit(
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     5_000_000n, // Manual gas limit to bypass MetaMask simulation revert
+          gas:     500_000n, // Lower manual gas limit to accommodate low user balance (estimate is ~250k)
           chainId: ritualChain.id,
         });
 
