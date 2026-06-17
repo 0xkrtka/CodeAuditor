@@ -70,9 +70,16 @@ async function main() {
     "function requestAudit(string contractCode, address executor) external returns (uint256 auditId, bytes32 jobId)",
   ]);
   
-  const testCode = "pragma solidity ^0.8.0; contract Test { uint x; function set(uint v) external { x = v; } }";
+  const multilineCode = `pragma solidity ^0.8.0;
+contract Test {
+    string public greeting = "Hello, World!";
+    function greet() external view returns (string memory) {
+        return greeting;
+    }
+}`;
+  const escapedCode = JSON.stringify(multilineCode).slice(1, -1);
   const calldata = auditorIface.encodeFunctionData("requestAudit", [
-    testCode,
+    escapedCode,
     "0x0000000000000000000000000000000000000000", // use defaultExecutor
   ]);
 

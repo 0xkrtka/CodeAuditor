@@ -526,13 +526,16 @@ export function useAudit(
 
         // ── Step 1: DIHAPUS — auditFee = 0, tidak perlu approve mRITUAL ─
 
+        // Escape newlines and double quotes for JSON compatibility
+        const escapedCode = JSON.stringify(contractCode).slice(1, -1);
+
         // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
         // Per Ritual docs: 0x0802 simulation fails on MetaMask (eth_call reverts).
         // To bypass this, call contract with a high manual gas limit (5,000,000).
         const data = encodeFunctionData({
           abi: CODE_AUDITOR_ABI,
           functionName: "requestAudit",
-          args: [contractCode, "0x0000000000000000000000000000000000000000"], // Use default executor on-chain
+          args: [escapedCode, "0x0000000000000000000000000000000000000000"], // Use default executor on-chain
         });
 
         console.log("[Audit] Sending requestAudit tx to contract...");
