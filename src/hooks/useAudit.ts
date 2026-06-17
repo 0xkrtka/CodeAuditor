@@ -550,7 +550,7 @@ export function useAudit(
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     500_000n, // Manual gas limit to bypass MetaMask simulation revert issues
+          gas:     3_000_000n, // Per Ritual docs: 3M gas for LLM precompile (actual ~60K; inference is off-chain async)
           gasPrice: 1_500_000_000n, // Enforce 1.5 gwei gas price
           chainId: ritualChain.id,
         });
@@ -563,10 +563,12 @@ export function useAudit(
         }));
 
         // ── Step 3: Wait for TX to be mined ─────────────────────────────
-        // LLM precompile calls are synchronous — the EVM executes the full
-        // AI inference during the transaction. This can take 10-120+ seconds.
-        // We use a 300s timeout to account for busy TEE nodes.
-        console.log("[Audit] Waiting for transaction receipt (LLM inference in progress)...");
+        // LLM precompile (0x0802) is SHORT-RUNNING ASYNC:
+        // 1) Builder simulates tx and creates commitment
+        // 2) Executor runs inference off-chain in TEE
+        // 3) Builder re-executes tx with settled output injected via spcCalls
+        // This can take 10-120+ seconds. We use a 300s timeout.
+        console.log("[Audit] Waiting for transaction receipt (async LLM settlement)...");
         let receipt;
         try {
           receipt = await publicClient.waitForTransactionReceipt({
