@@ -559,15 +559,49 @@ export function useAudit(
         setState((prev) => ({
           ...prev,
           txHash: auditTx,
-          phase:  "streaming", // Transition to streaming immediately
+          phase:  "waiting", // Transition to waiting for confirmation
         }));
 
-        // Start SSE stream immediately
+        // ── Step 3: Wait for TX to be mined ─────────────────────────────
+        // LLM precompile calls are synchronous — the EVM executes the full
+        // AI inference during the transaction. This can take 10-120+ seconds.
+        // We use a 300s timeout to account for busy TEE nodes.
+        console.log("[Audit] Waiting for transaction receipt (LLM inference in progress)...");
+        let receipt;
+        try {
+          receipt = await publicClient.waitForTransactionReceipt({
+            hash: auditTx,
+            timeout: 300_000, // 300 seconds — generous for LLM inference
+          });
+        } catch (receiptErr: any) {
+          console.error("[Audit] waitForTransactionReceipt failed:", receiptErr);
+          throw new Error(
+            "Transaction timed out waiting for confirmation. The Ritual Chain may be congested. " +
+            "Check your transaction on the block explorer."
+          );
+        }
+
+        console.log("[Audit] Receipt received. Status:", receipt.status, "Gas used:", receipt.gasUsed.toString());
+
+        if (receipt.status === "reverted") {
+          throw new Error(
+            "Transaction was mined but REVERTED on-chain. The LLM precompile call may have failed. " +
+            "Ensure the CodeAuditor contract has sufficient RitualWallet balance."
+          );
+        }
+
+        // ── Step 4: TX confirmed! Fetch audit result from contract ──────
+        setState((prev) => ({
+          ...prev,
+          phase: "streaming",
+        }));
+
+        // Start SSE stream as visual feedback
         openSseStream(auditTx);
 
-        // Start polling the contract for the audit result as a backup/validation
+        // Poll the contract for the completed audit result
         const pollInterval = 3000; // 3 seconds
-        const maxPollTime = 120000; // 120 seconds
+        const maxPollTime = 60000; // 60 seconds (audit should already be stored since TX is confirmed)
         const startTime = Date.now();
 
         const pollResult = async () => {
@@ -592,7 +626,7 @@ export function useAudit(
               }) as any;
 
               if (audit && audit.completed) {
-                console.log("[Audit] Polling detected completed audit on-chain ID:", latestId.toString());
+                console.log("[Audit] On-chain audit ID:", latestId.toString(), "completed!");
                 setState((prev) => {
                   const newText = audit.auditResult || "";
                   // Only update if stream has not already fetched more text
@@ -613,7 +647,8 @@ export function useAudit(
           return false;
         };
 
-        // Run first poll immediately
+        // Run first poll immediately — the TX is already confirmed, so the
+        // audit data should be available in the contract right away.
         let completed = await pollResult();
 
         if (!completed) {
@@ -621,13 +656,13 @@ export function useAudit(
             const elapsed = Date.now() - startTime;
             if (elapsed > maxPollTime) {
               clearInterval(intervalId);
-              console.warn("[Audit] Polling timed out.");
+              console.warn("[Audit] Polling timed out after TX confirmed.");
               setState((prev) => {
                 if (prev.phase === "complete" || prev.streamedText.length > 10) return prev;
                 return {
                   ...prev,
                   phase: "error",
-                  error: "Audit request timed out. Please check your transaction history on-chain.",
+                  error: "Transaction confirmed but audit data not found. Check the block explorer.",
                 };
               });
               return;
