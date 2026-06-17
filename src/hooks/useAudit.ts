@@ -551,77 +551,88 @@ export function useAudit(
         setState((prev) => ({
           ...prev,
           txHash: auditTx,
-          phase:  "waiting",
+          phase:  "streaming", // Transition to streaming immediately
         }));
 
-        // ── Step 3: Wait for receipt and extract result as fallback ──────
-        console.log("[Audit] Waiting for receipt...");
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash:            auditTx,
-          confirmations:   1,
-          pollingInterval: 500,
-          timeout:         120_000,
-        });
+        // Start SSE stream immediately
+        openSseStream(auditTx);
 
-        console.log("[Audit] Receipt received, status:", receipt.status);
+        // Start polling the contract for the audit result as a backup/validation
+        const pollInterval = 3000; // 3 seconds
+        const maxPollTime = 120000; // 120 seconds
+        const startTime = Date.now();
 
-        if (receipt.status === "reverted") {
-          setState((prev) => ({
-            ...prev,
-            phase: "error",
-            error: "Transaction reverted on-chain. Check contract RitualWallet balance and try again.",
-          }));
-          return;
-        }
+        const pollResult = async () => {
+          try {
+            // Get user's audit history from contract
+            const auditIds = await publicClient.readContract({
+              address: _auditorAddress,
+              abi: CODE_AUDITOR_ABI,
+              functionName: "getMyAudits",
+              args: [userAddress],
+            }) as readonly bigint[];
 
-        // ── Step 4: Confirm transaction and initiate SSE streaming ──────
-        setState((prev) => ({
-          ...prev,
-          phase: "streaming",
-        }));
-        openSseStream(auditTx); // stream concurrently
+            if (auditIds && auditIds.length > 0) {
+              const latestId = auditIds[auditIds.length - 1];
+              
+              // Fetch latest audit details
+              const audit = await publicClient.readContract({
+                address: _auditorAddress,
+                abi: CODE_AUDITOR_ABI,
+                functionName: "getAudit",
+                args: [latestId],
+              }) as any;
 
-        // Extract result from PrecompileCalled event (settlement receipt)
-        const llmResult = extractLLMResultFromReceipt(receipt);
-
-        if (llmResult) {
-          console.log("[Audit] LLM result found in receipt, decoding...");
-          const { text, hasError, errorMessage } = decodeLLMContent(llmResult);
-
-          if (hasError) {
-            console.warn("[Audit] LLM error:", errorMessage);
-            // Don't override stream — stream may already have text
-            setState((prev) => {
-              if (prev.phase === "complete" || prev.streamedText.length > 100) return prev;
-              return {
-                ...prev,
-                phase: "error",
-                error: `LLM inference error: ${errorMessage}`,
-              };
-            });
-          } else if (text) {
-            // Use receipt text only if stream didn't deliver content
-            setState((prev) => {
-              if (prev.streamedText.length > 50) return prev; // stream won
-              return {
-                ...prev,
-                phase:         "complete",
-                streamedText:  text,
-                severityScore: parseSeverityScore(text),
-              };
-            });
-          } else {
-            // No content yet — commitment phase, stream should deliver
-            console.log("[Audit] No content in receipt yet — stream delivering tokens...");
+              // Compare the jobId in the contract with our transaction hash
+              if (audit && audit.jobId && audit.jobId.toLowerCase() === auditTx.toLowerCase()) {
+                if (audit.completed) {
+                  console.log("[Audit] Polling detected completed audit on-chain ID:", latestId.toString());
+                  setState((prev) => {
+                    const newText = audit.auditResult || "";
+                    // Only update if stream has not already fetched more text
+                    if (prev.streamedText.length > newText.length + 50) return prev;
+                    return {
+                      ...prev,
+                      phase: "complete",
+                      streamedText: newText,
+                      severityScore: Number(audit.severityScore),
+                    };
+                  });
+                  return true; // Stop polling
+                }
+              }
+            }
+          } catch (pollErr) {
+            console.warn("[Audit] Polling error (non-fatal):", pollErr);
           }
-        } else {
-          // No PrecompileCalled event — tx is in commitment phase
-          // Stream will deliver tokens as executor settles
-          console.log("[Audit] No PrecompileCalled event — waiting for stream...");
-          setState((prev) => {
-            if (prev.phase === "streaming" || prev.phase === "complete") return prev;
-            return { ...prev, phase: "streaming" };
-          });
+          return false;
+        };
+
+        // Run first poll immediately
+        let completed = await pollResult();
+
+        if (!completed) {
+          const intervalId = setInterval(async () => {
+            const elapsed = Date.now() - startTime;
+            if (elapsed > maxPollTime) {
+              clearInterval(intervalId);
+              console.warn("[Audit] Polling timed out.");
+              setState((prev) => {
+                if (prev.phase === "complete" || prev.streamedText.length > 10) return prev;
+                return {
+                  ...prev,
+                  phase: "error",
+                  error: "Audit request timed out. Please check your transaction history on-chain.",
+                };
+              });
+              return;
+            }
+
+            const isDone = await pollResult();
+            if (isDone) {
+              clearInterval(intervalId);
+            }
+          }, pollInterval);
         }
       } catch (err: any) {
         console.error("[Audit] Error:", err);
