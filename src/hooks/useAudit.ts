@@ -294,7 +294,7 @@ export function useAudit(
       await switchChainAsync({ chainId: ritualChain.id });
     }
 
-    // Call deposit(100000) on RitualWallet
+    // Call deposit(10000000) on RitualWallet to lock for ~41 days (10M blocks)
     const depositData = encodeFunctionData({
       abi: [{
         name: "deposit",
@@ -304,7 +304,7 @@ export function useAudit(
         outputs: [],
       }] as const,
       functionName: "deposit",
-      args: [100000n],
+      args: [10000000n],
     });
 
     const tx = await sendTransactionAsync({
