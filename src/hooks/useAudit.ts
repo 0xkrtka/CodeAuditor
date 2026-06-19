@@ -550,8 +550,8 @@ export function useAudit(
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     3_000_000n, // Per Ritual docs: 3M gas for LLM precompile (actual ~60K; inference is off-chain async)
-          gasPrice: 1_500_000_000n, // Enforce 1.5 gwei gas price
+          gas:     5_000_000n,        // 5M gas — needed for async LLM precompile settlement
+          gasPrice: 5_000_000_000n,   // 5 gwei — high enough for builder to include TX
           chainId: ritualChain.id,
         });
 
@@ -563,23 +563,24 @@ export function useAudit(
         }));
 
         // ── Step 3: Wait for TX to be mined ─────────────────────────────
-        // LLM precompile (0x0802) is SHORT-RUNNING ASYNC:
+        // Ritual LLM precompile is ASYNC:
         // 1) Builder simulates tx and creates commitment
-        // 2) Executor runs inference off-chain in TEE
-        // 3) Builder re-executes tx with settled output injected via spcCalls
-        // This can take 10-120+ seconds. We use a 300s timeout.
-        console.log("[Audit] Waiting for transaction receipt (async LLM settlement)...");
+        // 2) Executor runs inference off-chain in TEE (can take 2-10+ minutes)
+        // 3) Builder re-executes tx with settled output injected
+        // We use a 600s timeout to accommodate GLM-4.7 reasoning model.
+        console.log("[Audit] Waiting for transaction receipt (async LLM settlement, up to 10min)...");
         let receipt;
         try {
           receipt = await publicClient.waitForTransactionReceipt({
             hash: auditTx,
-            timeout: 300_000, // 300 seconds — generous for LLM inference
+            timeout: 600_000, // 600 seconds (10 min) — GLM reasoning model can take this long
+            pollingInterval: 4_000, // Poll every 4s
           });
         } catch (receiptErr: any) {
           console.error("[Audit] waitForTransactionReceipt failed:", receiptErr);
           throw new Error(
-            "Transaction timed out waiting for confirmation. The Ritual Chain may be congested. " +
-            "Check your transaction on the block explorer."
+            "Transaction timed out after 10 minutes. The Ritual Chain LLM executor may be busy. " +
+            `Check your TX on the explorer: https://explorer.ritualfoundation.org/tx/${auditTx}`
           );
         }
 

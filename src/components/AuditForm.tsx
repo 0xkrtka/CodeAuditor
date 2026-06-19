@@ -484,7 +484,7 @@ function AuditProgressStepper({
         <span>
           {phase === "approving"  && "Waiting for token approval in wallet…"}
           {phase === "submitting" && "Waiting for transaction confirmation…"}
-          {phase === "waiting"    && "Transaction submitted — waiting for receipt…"}
+          {phase === "waiting"    && "⏳ LLM inference running on Ritual TEE — this can take 2–10 min. Do not close this tab."}
           {phase === "streaming"  && `Streaming AI audit… ${tokenCount} tokens received`}
           {phase === "complete"   && "Audit complete"}
         </span>
