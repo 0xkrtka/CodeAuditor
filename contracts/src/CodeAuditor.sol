@@ -210,7 +210,7 @@ contract CodeAuditor {
         return abi.encode(
             executor,               // address  executor
             new bytes[](0),         // bytes[]  encryptedSecrets
-            uint256(300),           // uint256  ttl (300 blocks, safe for 10-40s inference)
+            uint256(5000),          // uint256  ttl (5000 blocks ~16 mins, safe for fast block times)
             new bytes[](0),         // bytes[]  secretSignatures
             bytes(""),              // bytes    userPublicKey
             messagesJson,           // string   messagesJson

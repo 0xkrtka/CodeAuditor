@@ -550,8 +550,7 @@ export function useAudit(
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     5_000_000n,        // 5M gas — needed for async LLM precompile settlement
-          gasPrice: 5_000_000_000n,   // 5 gwei — high enough for builder to include TX
+          gas:     1_000_000n,        // 1M gas is more than enough for EOA commitment tx
           chainId: ritualChain.id,
         });
 
