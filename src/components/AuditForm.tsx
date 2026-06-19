@@ -112,11 +112,17 @@ export function AuditForm() {
     }
   }, []);
 
+  // True while RPC data hasn't arrived yet — don't show the banner in this window
+  const isLockDataLoading =
+    isConnected &&
+    (userWalletLock === undefined || currentBlock === undefined);
+
+  // True when the user has an active lock (lockUntil > currentBlock)
   const isWalletLocked =
-    !isConnected ||
-    (userWalletLock !== undefined &&
-      currentBlock !== undefined &&
-      userWalletLock > currentBlock);
+    isConnected &&
+    userWalletLock !== undefined &&
+    currentBlock !== undefined &&
+    userWalletLock > currentBlock;
 
   async function handleActivateLock() {
     try {
@@ -130,7 +136,7 @@ export function AuditForm() {
   }
 
   async function handleSubmit() {
-    if (!code.trim() || isOverLimit || !isWalletLocked) return;
+    if (!code.trim() || isOverLimit || (!isWalletLocked && !isLockDataLoading)) return;
     await submitAudit(code);
   }
 
@@ -138,7 +144,12 @@ export function AuditForm() {
     AUDITOR_ADDRESS === "0x0000000000000000000000000000000000000000";
 
   const btnDisabled =
-    !isConnected || !code.trim() || isOverLimit || notDeployed || !isWalletLocked || isActivatingLock;
+    !isConnected ||
+    !code.trim() ||
+    isOverLimit ||
+    notDeployed ||
+    (!isWalletLocked && !isLockDataLoading) ||
+    isActivatingLock;
 
   const btnLabel = !isConnected
     ? "Connect wallet to audit"
@@ -146,6 +157,8 @@ export function AuditForm() {
     ? "Contract not deployed"
     : isOverLimit
     ? "Code too long (max 32KB)"
+    : isLockDataLoading
+    ? "Checking wallet lock…"
     : !isWalletLocked
     ? "Activate wallet lock first"
     : "Request On-Chain Audit";
@@ -353,7 +366,7 @@ export function AuditForm() {
       )}
 
       {/* ── Lock Warning Banner ────────────────────────────────────────── */}
-      {isConnected && !isWalletLocked && !notDeployed && (phase === "idle" || phase === "error") && (
+      {isConnected && !isWalletLocked && !isLockDataLoading && !notDeployed && (phase === "idle" || phase === "error") && (
         <div style={{
           padding: "16px 20px",
           borderRadius: "var(--radius-lg)",
