@@ -11,9 +11,19 @@ async function main() {
     process.exit(1);
   }
 
-  const AUDITOR   = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+  const fs = require("fs");
+  const path = require("path");
+  let AUDITOR = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+  let TOKEN = "0x26c11EB567BB83d2B031af41188ECA7872CaAF07";
+  try {
+    const envContent = fs.readFileSync(path.join(__dirname, "../.env.local"), "utf8");
+    const matchAuditor = envContent.match(/NEXT_PUBLIC_AUDITOR_ADDRESS=(0x[a-fA-F0-9]{40})/);
+    const matchToken = envContent.match(/NEXT_PUBLIC_PAYMENT_TOKEN=(0x[a-fA-F0-9]{40})/);
+    if (matchAuditor) AUDITOR = matchAuditor[1];
+    if (matchToken) TOKEN = matchToken[1];
+  } catch (e) {}
+
   const WALLET    = "0x532F0dF0896F353d8C3DD8cc134e8129DA2a3948";
-  const TOKEN     = "0x26c11EB567BB83d2B031af41188ECA7872CaAF07";
   const EXECUTOR  = "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B";
   const RPC_URL   = "https://rpc.ritualfoundation.org";
 

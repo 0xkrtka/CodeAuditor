@@ -11,7 +11,15 @@ async function main() {
     process.exit(1);
   }
 
-  const AUDITOR_ADDRESS = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+  const fs = require("fs");
+  const path = require("path");
+  let AUDITOR_ADDRESS = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+  try {
+    const envContent = fs.readFileSync(path.join(__dirname, "../.env.local"), "utf8");
+    const matchAuditor = envContent.match(/NEXT_PUBLIC_AUDITOR_ADDRESS=(0x[a-fA-F0-9]{40})/);
+    if (matchAuditor) AUDITOR_ADDRESS = matchAuditor[1];
+  } catch (e) {}
+
   const RPC_URL         = "https://rpc.ritualfoundation.org";
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);

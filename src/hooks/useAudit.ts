@@ -282,7 +282,7 @@ export function useAudit(
   // Calls deposit(lockDuration) directly on RitualWallet for the user's EOA
   // with a 100,000 block lock duration (~10 hours) to ensure async LLM calls work.
   // We send a tiny amount (0.01 RITUAL) to extend the lock duration.
-  const depositFees = useCallback(async () => {
+  const depositFees = useCallback(async (amount: string = "0.05") => {
     if (!userAddress || !walletClient) {
       throw new Error("Wallet not connected");
     }
@@ -310,7 +310,7 @@ export function useAudit(
     const tx = await sendTransactionAsync({
       to:      RITUAL_CONTRACTS.RITUAL_WALLET,
       data:    depositData,
-      value:   parseEther("0.01"),
+      value:   parseEther(amount),
       chainId: ritualChain.id,
     });
 
