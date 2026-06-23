@@ -2,15 +2,16 @@
 pragma solidity ^0.8.20;
 
 /**
- * @title CodeAuditor v4
+ * @title CodeAuditor v6
  * @notice On-chain Solidity audit powered by Ritual LLM precompile (0x0802)
  *
- * v4 fixes:
- *   - Removed on-chain TEEServiceRegistry lookup (caused out-of-gas, ~1.8M gas)
- *   - Executor address now passed as parameter (looked up off-chain by frontend)
+ * v6 fixes:
+ *   - transferFrom is now skipped when auditFee == 0 (free audit mode)
+ *   - Executor address passed as parameter or uses defaultExecutor
  *   - Owner can set default executor via setExecutor()
  *   - Correct 30-field LLM ABI per Ritual docs
- *   - depositForFees() to fund RitualWallet
+ *   - depositForFees() to fund RitualWallet for executor escrow
+ *   - _decodeLLMResponse handles 5-field output (StorageRef in field 5)
  */
 
 interface IERC20 {
@@ -107,8 +108,11 @@ contract CodeAuditor {
         address exec = executor == address(0) ? defaultExecutor : executor;
         if (exec == address(0)) revert NoExecutor();
 
-        bool paid = paymentToken.transferFrom(msg.sender, address(this), auditFee);
-        if (!paid) revert PaymentFailed();
+        // Only collect fee when auditFee > 0 (free audit mode skips transferFrom)
+        if (auditFee > 0) {
+            bool paid = paymentToken.transferFrom(msg.sender, address(this), auditFee);
+            if (!paid) revert PaymentFailed();
+        }
 
         string memory responseText = _callLLM(exec, contractCode);
 
@@ -267,11 +271,14 @@ contract CodeAuditor {
         (, actualOutput) = abi.decode(data, (bytes, bytes));
     }
 
+
     function _decodeLLMResponse(bytes calldata data)
         external
         pure
         returns (bool hasError, bytes memory completionData, string memory errorMsg)
     {
+        // Ritual LLM output: (bool hasError, bytes completionData, bytes modelMeta, string errorMsg[, StorageRef])
+        // abi.decode with 4 params safely ignores trailing StorageRef bytes
         bytes memory modelMeta;
         (hasError, completionData, modelMeta, errorMsg) = abi.decode(data, (bool, bytes, bytes, string));
     }

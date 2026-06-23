@@ -43,6 +43,7 @@ export interface AuditState {
   severityScore: number | null;
   error:         string | null;
   txHash:        string | null;
+  jobId:         string | null;   // jobId from AuditRequested event — used for SSE
   tokenCount:    number;
 }
 
@@ -52,6 +53,7 @@ const INITIAL_STATE: AuditState = {
   severityScore: null,
   error:         null,
   txHash:        null,
+  jobId:         null,
   tokenCount:    0,
 };
 
@@ -106,99 +108,35 @@ function encodeLLMPayload(
   ) as `0x${string}`;
 }
 
-// ─── Audit Prompt Builder ──────────────────────────────────────────────────────
-function buildAuditMessages(contractCode: string): string {
-  return JSON.stringify([
-    {
-      role: "system",
-      content:
-        "You are a senior Solidity security auditor. Respond with:\nSEVERITY_SCORE: [0-100]\nSUMMARY: [2 sentences]\nFINDINGS:\n[numbered list with severity]\nRECOMMENDATIONS:\n[fixes]",
-    },
-    {
-      role: "user",
-      content: `Audit this contract:\n\`\`\`solidity\n${contractCode}\n\`\`\``,
-    },
-  ]);
-}
-
-// ─── LLM Result Extractor from PrecompileCalled event ───────────────────────
-// Per docs Section 2: result lives in PrecompileCalled(address,bytes,bytes) event
-const PRECOMPILE_CALLED_TOPIC = keccak256(
-  toHex("PrecompileCalled(address,bytes,bytes)"),
+// ─── Extract jobId from AuditRequested event in receipt ─────────────────────
+// Per Ritual CodeAuditor contract:
+//   event AuditRequested(uint256 indexed auditId, address indexed requester,
+//                        bytes32 codeHash, bytes32 jobId, uint256 timestamp)
+// auditId (indexed) → topics[1], requester (indexed) → topics[2]
+// non-indexed → data: abi.encode(bytes32 codeHash, bytes32 jobId, uint256 timestamp)
+const AUDIT_REQUESTED_TOPIC = keccak256(
+  toHex("AuditRequested(uint256,address,bytes32,bytes32,uint256)"),
 );
 
-function extractLLMResultFromReceipt(receipt: any): `0x${string}` | null {
+function extractJobIdFromReceipt(receipt: any, requester: string): string | null {
   for (const log of receipt.logs) {
-    if (log.topics[0] !== PRECOMPILE_CALLED_TOPIC) continue;
+    if (!log.topics || log.topics[0] !== AUDIT_REQUESTED_TOPIC) continue;
     try {
-      const [addr, , output] = decodeAbiParameters(
-        parseAbiParameters("address, bytes, bytes"),
+      // topics[2] is the indexed requester address (padded to 32 bytes)
+      const logRequester = "0x" + log.topics[2]?.slice(-40);
+      if (logRequester.toLowerCase() !== requester.toLowerCase()) continue;
+
+      // data = abi.encode(bytes32 codeHash, bytes32 jobId, uint256 timestamp)
+      const [, jobIdBytes] = decodeAbiParameters(
+        parseAbiParameters("bytes32, bytes32, uint256"),
         log.data,
       );
-      if (
-        (addr as string).toLowerCase() !==
-        RITUAL_CONTRACTS.LLM_PRECOMPILE.toLowerCase()
-      )
-        continue;
-      // Unwrap async envelope: (bytes simmedInput, bytes actualOutput)
-      try {
-        const [, actual] = decodeAbiParameters(
-          parseAbiParameters("bytes, bytes"),
-          output as `0x${string}`,
-        );
-        return actual as `0x${string}`;
-      } catch {
-        return output as `0x${string}`;
-      }
+      return jobIdBytes as string;
     } catch {
       continue;
     }
   }
   return null;
-}
-
-// ─── Decode LLM text content from ABI-encoded completionData ─────────────────
-function decodeLLMContent(actualOutput: `0x${string}`): {
-  text: string;
-  hasError: boolean;
-  errorMessage: string;
-} {
-  try {
-    const decoded = decodeAbiParameters(
-      parseAbiParameters(
-        "bool, bytes, bytes, string, (string,string,string)",
-      ),
-      actualOutput,
-    );
-    const hasError    = decoded[0] as boolean;
-    const completionData = decoded[1] as `0x${string}`;
-    const errorMsg    = decoded[3] as string;
-
-    if (hasError) return { text: "", hasError: true, errorMessage: errorMsg };
-    if (!completionData || completionData === "0x")
-      return { text: "", hasError: false, errorMessage: "" };
-
-    const completionDecoded = decodeAbiParameters(
-      parseAbiParameters(
-        "string, string, uint256, string, string, string, uint256, bytes[], bytes",
-      ),
-      completionData,
-    );
-    const choicesData = completionDecoded[7] as `0x${string}`[];
-    if (!choicesData.length) return { text: "", hasError: false, errorMessage: "" };
-
-    const [, , messageData] = decodeAbiParameters(
-      parseAbiParameters("uint256, string, bytes"),
-      choicesData[0],
-    );
-    const [content] = decodeAbiParameters(
-      parseAbiParameters("string, string, string, uint256, bytes[]"),
-      messageData as `0x${string}`,
-    );
-    return { text: content as string, hasError: false, errorMessage: "" };
-  } catch {
-    return { text: "", hasError: false, errorMessage: "" };
-  }
 }
 
 // ─── Parse severity score from audit text ─────────────────────────────────────
@@ -214,7 +152,7 @@ function parseSeverityScore(text: string): number | null {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useAudit(
   _auditorAddress: `0x${string}`,  // CodeAuditor contract address (used for requestAudit calls)
-  _paymentToken:   `0x${string}`,  // mRITUAL token address (used for approval + payment)
+  _paymentToken:   `0x${string}`,  // mRITUAL token address (kept for future use)
 ) {
   const { address: userAddress, chain } = useAccount();
   const { switchChainAsync }            = useSwitchChain();
@@ -224,7 +162,7 @@ export function useAudit(
 
   const [state, setState] = useState<AuditState>(INITIAL_STATE);
 
-  // useSendTransaction — used for approval + requestAudit on CodeAuditor.
+  // useSendTransaction — used for requestAudit on CodeAuditor.
   // We pass a manual gas limit to bypass MetaMask simulation of async precompile calls.
   const { sendTransactionAsync } = useSendTransaction();
 
@@ -279,9 +217,9 @@ export function useAudit(
   }, [refetchUserWalletBalance, refetchUserWalletLock, refetchBlockNumber]);
 
   // ─── Deposit/Extend lock for user EOA in RitualWallet ──────────────────────
-  // Calls deposit(lockDuration) directly on RitualWallet for the user's EOA
-  // with a 100,000 block lock duration (~10 hours) to ensure async LLM calls work.
-  // We send a tiny amount (0.01 RITUAL) to extend the lock duration.
+  // NOTE: This deposits RITUAL into RitualWallet for the USER's EOA.
+  // The CONTRACT's RitualWallet is funded separately by the owner via depositForFees().
+  // Users only need this if they want to call precompiles directly from their EOA.
   const depositFees = useCallback(async (amount: string = "0.05") => {
     if (!userAddress || !walletClient) {
       throw new Error("Wallet not connected");
@@ -333,7 +271,6 @@ export function useAudit(
       await switchChainAsync({ chainId: ritualChain.id });
     }
 
-    // Encode withdraw(uint256) function call
     const data = encodeFunctionData({
       abi: [{
         name: 'withdraw',
@@ -358,15 +295,14 @@ export function useAudit(
     }
   }, [userAddress, walletClient, chain, switchChainAsync, sendTransactionAsync, publicClient, refetchAllWalletData, userWalletBalance]);
 
-  // auditFee dihapus — fee = 0, user tidak perlu bayar mRITUAL
-
   // ─────────────────────────────────────────────────────────────────────────
   //  SSE Streaming via fetch() + EIP-712 auth
-  //  Per Ritual docs: cannot use browser EventSource (no custom header support).
+  //  Per Ritual docs: use jobId (from AuditRequested event) as the stream key.
+  //  Cannot use browser EventSource (no custom header support).
   //  Use fetch() with ReadableStream + Authorization + X-Timestamp headers.
   // ─────────────────────────────────────────────────────────────────────────
   const openSseStream = useCallback(
-    async (txHash: `0x${string}`) => {
+    async (jobId: string) => {
       if (!walletClient) return;
 
       // Sign EIP-712 stream request
@@ -382,16 +318,15 @@ export function useAudit(
           },
           types: {
             StreamRequest: [
-              { name: "txHash",    type: "bytes32" },
+              { name: "jobId",     type: "bytes32" },
               { name: "timestamp", type: "uint256" },
             ],
           },
           primaryType: "StreamRequest",
-          message: { txHash, timestamp },
+          message: { jobId: jobId as `0x${string}`, timestamp },
         });
       } catch (err) {
         console.warn("[SSE] EIP-712 sign failed, will try without auth:", err);
-        // Fallback: try unauthenticated (some executors don't require auth)
         signature = "0x" as `0x${string}`;
       }
 
@@ -400,7 +335,8 @@ export function useAudit(
       const abortController = new AbortController();
       abortRef.current = abortController;
 
-      const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${txHash}`;
+      // Use jobId-based SSE URL (correct format per Ritual docs)
+      const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${jobId}`;
       console.log("[SSE] Connecting to:", streamUrl);
 
       try {
@@ -414,7 +350,7 @@ export function useAudit(
         });
 
         if (!response.ok) {
-          console.warn(`[SSE] HTTP ${response.status} — stream unavailable, result from receipt.`);
+          console.warn(`[SSE] HTTP ${response.status} — stream unavailable, result from contract.`);
           return;
         }
 
@@ -487,14 +423,15 @@ export function useAudit(
       } catch (err: any) {
         if (err.name === "AbortError") return;
         console.warn("[SSE] Stream error:", err.message);
-        // Don't set error — receipt fallback below handles this
+        // Don't set error — contract polling fallback handles this
       }
     },
     [walletClient],
   );
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  Main: submit audit — sends directly to LLM precompile 0x0802
+  //  Main: submit audit — calls requestAudit on CodeAuditor contract
+  //  which internally calls LLM precompile 0x0802 in TEE
   // ─────────────────────────────────────────────────────────────────────────
   const submitAudit = useCallback(
     async (contractCode: string) => {
@@ -524,9 +461,7 @@ export function useAudit(
           await switchChainAsync({ chainId: ritualChain.id });
         }
 
-        // ── Step 1: DIHAPUS — auditFee = 0, tidak perlu approve mRITUAL ─
-
-        // Get initial audit IDs of the user before transaction to detect new records
+        // Get initial audit count before transaction to detect new records
         const initialAuditIds = await publicClient.readContract({
           address: _auditorAddress,
           abi: CODE_AUDITOR_ABI,
@@ -536,21 +471,19 @@ export function useAudit(
         const initialCount = initialAuditIds ? initialAuditIds.length : 0;
         console.log(`[Audit] Initial audit count for ${userAddress}: ${initialCount}`);
 
-        // Escape newlines and double quotes for JSON compatibility
-        const escapedCode = JSON.stringify(contractCode).slice(1, -1);
-
-        // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
+        // ── Step 1: Call requestAudit on CodeAuditor Contract ──────────
+        // No approval needed — auditFee = 0 (free audit mode)
         const data = encodeFunctionData({
           abi: CODE_AUDITOR_ABI,
           functionName: "requestAudit",
-          args: [escapedCode, "0x0000000000000000000000000000000000000000"], // Use default executor on-chain
+          args: [contractCode, "0x0000000000000000000000000000000000000000"],
         });
 
         console.log("[Audit] Sending requestAudit tx to contract...");
         const auditTx = await sendTransactionAsync({
           to:      _auditorAddress,
           data,
-          gas:     1_000_000n,        // 1M gas is more than enough for EOA commitment tx
+          gas:     1_000_000n,        // 1M gas — enough for commitment tx
           chainId: ritualChain.id,
         });
 
@@ -558,21 +491,20 @@ export function useAudit(
         setState((prev) => ({
           ...prev,
           txHash: auditTx,
-          phase:  "waiting", // Transition to waiting for confirmation
+          phase:  "waiting",
         }));
 
-        // ── Step 3: Wait for TX to be mined ─────────────────────────────
+        // ── Step 2: Wait for TX to be mined ─────────────────────────────
         // Ritual LLM precompile is ASYNC:
         // 1) Builder simulates tx and creates commitment
-        // 2) Executor runs inference off-chain in TEE (can take 2-10+ minutes)
+        // 2) Executor runs inference off-chain in TEE (2-10+ minutes for GLM-4.7)
         // 3) Builder re-executes tx with settled output injected
-        // We use a 600s timeout to accommodate GLM-4.7 reasoning model.
-        console.log("[Audit] Waiting for transaction receipt (async LLM settlement, up to 10min)...");
+        console.log("[Audit] Waiting for transaction receipt (async LLM, up to 10min)...");
         let receipt;
         try {
           receipt = await publicClient.waitForTransactionReceipt({
             hash: auditTx,
-            timeout: 600_000, // 600 seconds (10 min) — GLM reasoning model can take this long
+            timeout: 600_000,       // 600s (10 min) — GLM reasoning model can take this long
             pollingInterval: 4_000, // Poll every 4s
           });
         } catch (receiptErr: any) {
@@ -587,28 +519,37 @@ export function useAudit(
 
         if (receipt.status === "reverted") {
           throw new Error(
-            "Transaction was mined but REVERTED on-chain. The LLM precompile call may have failed. " +
-            "Ensure the CodeAuditor contract has sufficient RitualWallet balance."
+            "Transaction reverted on-chain. Possible causes: " +
+            "(1) Contract RitualWallet balance too low for LLM escrow — contact dApp owner. " +
+            "(2) No executor configured on the contract."
           );
         }
 
-        // ── Step 4: TX confirmed! Fetch audit result from contract ──────
+        // ── Step 3: Extract jobId from AuditRequested event ─────────────
+        const jobId = extractJobIdFromReceipt(receipt, userAddress);
+        console.log("[Audit] jobId from AuditRequested event:", jobId);
+
         setState((prev) => ({
           ...prev,
           phase: "streaming",
+          jobId,
         }));
 
-        // Start SSE stream as visual feedback
-        openSseStream(auditTx);
+        // ── Step 4: Start SSE stream using jobId (correct URL) ──────────
+        if (jobId) {
+          openSseStream(jobId);
+        } else {
+          console.warn("[Audit] No jobId found in receipt logs, skipping SSE stream");
+        }
 
-        // Poll the contract for the completed audit result
-        const pollInterval = 3000; // 3 seconds
-        const maxPollTime = 60000; // 60 seconds (audit should already be stored since TX is confirmed)
-        const startTime = Date.now();
+        // ── Step 5: Poll contract for completed audit result ─────────────
+        // The TX is already confirmed, so audit data should appear very soon.
+        const pollInterval = 3000;  // 3 seconds
+        const maxPollTime  = 60000; // 60 seconds
+        const startTime    = Date.now();
 
         const pollResult = async () => {
           try {
-            // Get user's audit history from contract
             const auditIds = await publicClient.readContract({
               address: _auditorAddress,
               abi: CODE_AUDITOR_ABI,
@@ -618,8 +559,7 @@ export function useAudit(
 
             if (auditIds && auditIds.length > initialCount) {
               const latestId = auditIds[auditIds.length - 1];
-              
-              // Fetch latest audit details
+
               const audit = await publicClient.readContract({
                 address: _auditorAddress,
                 abi: CODE_AUDITOR_ABI,
@@ -635,8 +575,8 @@ export function useAudit(
                   if (prev.streamedText.length > newText.length + 50) return prev;
                   return {
                     ...prev,
-                    phase: "complete",
-                    streamedText: newText,
+                    phase:         "complete",
+                    streamedText:  newText,
                     severityScore: Number(audit.severityScore),
                   };
                 });
@@ -649,8 +589,7 @@ export function useAudit(
           return false;
         };
 
-        // Run first poll immediately — the TX is already confirmed, so the
-        // audit data should be available in the contract right away.
+        // Run first poll immediately
         let completed = await pollResult();
 
         if (!completed) {
@@ -681,15 +620,16 @@ export function useAudit(
 
         let errorMsg: string = err?.message ?? "Unknown error";
 
-        // Parse common MetaMask / RPC errors
         if (errorMsg.includes("User rejected") || errorMsg.includes("user rejected")) {
           errorMsg = "Transaction rejected by user.";
         } else if (errorMsg.includes("insufficient funds") || errorMsg.includes("insufficient balance")) {
           errorMsg = "Insufficient RITUAL for gas fees.";
         } else if (errorMsg.includes("sender locked")) {
-          errorMsg = "Previous audit still in progress. Please wait a few seconds and try again.";
+          errorMsg = "RitualWallet sender is temporarily locked. Wait a few blocks and try again.";
         } else if (errorMsg.includes("insufficient wallet balance")) {
           errorMsg = "Contract RitualWallet balance too low. Please contact the dApp owner to top up.";
+        } else if (errorMsg.includes("NoExecutor")) {
+          errorMsg = "No TEE executor configured on the contract. Contact the dApp owner.";
         }
 
         setState((prev) => ({
@@ -725,6 +665,7 @@ export function useAudit(
     severityScore: state.severityScore,
     error:         state.error,
     txHash:        state.txHash,
+    jobId:         state.jobId,
     tokenCount:    state.tokenCount,
     submitAudit,
     reset,

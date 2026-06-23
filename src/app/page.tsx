@@ -126,10 +126,10 @@ export default function Home() {
           margin: "0 auto 32px",
           animation: "slide-up 0.6s ease both 0.2s",
         }}>
-          Paste your Solidity contract, pay one micro-fee, and the{" "}
+          Paste your Solidity contract and the{" "}
           <strong style={{ color: "var(--text-primary)", fontWeight: 500 }}>Ritual LLM precompile</strong>{" "}
-          audits it inside a Trusted Execution Environment.
-          Results stream to you live, cryptographically signed and stored on-chain forever.
+          audits it inside a Trusted Execution Environment — completely free.
+          Results are stored on-chain forever.
         </p>
 
         {/* Feature chips */}
@@ -214,23 +214,23 @@ export default function Home() {
             },
             {
               step: "02",
-              icon: "ti-coin",
-              title: "Pay micro-fee",
-              desc:  "Approve a small ERC-20 payment. The contract pulls it atomically — X402 pattern.",
-              color: "#3B82F6",
+              icon: "ti-shield-check",
+              title: "Free AI audit",
+              desc:  "No payment needed. Submit your contract directly — the TEE handles it for free.",
+              color: "#10B981",
             },
             {
               step: "03",
               icon: "ti-cpu",
-              title: "TEE runs audit",
+              title: "TEE runs inference",
               desc:  "GLM-4.7-FP8 inside a Trusted Execution Environment analyzes your code.",
-              color: "#10B981",
+              color: "#3B82F6",
             },
             {
               step: "04",
-              icon: "ti-broadcast",
-              title: "Stream & store",
-              desc:  "Tokens stream live via SSE, each EIP-712 signed. Full report stored on-chain forever.",
+              icon: "ti-database",
+              title: "Stored on-chain",
+              desc:  "Full audit report with severity score stored permanently on Ritual Chain.",
               color: "#F59E0B",
             },
           ].map(({ step, icon, title, desc, color }) => (

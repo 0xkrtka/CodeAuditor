@@ -5,7 +5,6 @@ import { useAccount, useConnect, useDisconnect } from "wagmi";
 import { useAudit } from "@/hooks/useAudit";
 import { AuditResult } from "./AuditResult";
 import { wagmiConfig } from "@/app/providers";
-import { formatEther } from "viem";
 
 // ── Contract addresses from environment ──────────────────────────────────────
 let AUDITOR_ADDRESS = (
@@ -76,42 +75,19 @@ export function AuditForm() {
     streamedText,
     severityScore,
     txHash,
+    jobId,
     error,
     tokenCount,
     submitAudit,
     reset,
-    userWalletBalance,
-    userWalletLock,
-    currentBlock,
-    depositFees,
-    withdrawFees,
   } = useAudit(AUDITOR_ADDRESS, PAYMENT_TOKEN);
 
   const isActive  = phase !== "idle" && phase !== "error";
 
-  // ─── Ritual Wallet Lock & Balance calculations ─────────────────────────────
-  const isLocked = currentBlock !== undefined && userWalletLock !== undefined && currentBlock < userWalletLock;
-  const remainingBlocks = userWalletLock !== undefined && currentBlock !== undefined
-    ? (userWalletLock > currentBlock ? userWalletLock - currentBlock : 0n)
-    : 0n;
-
-  // Let's estimate remaining time: 200ms per block on Ritual Chain
-  const remainingSecs = Number(remainingBlocks) * 0.2;
-  const formatRemainingTime = () => {
-    if (remainingSecs <= 0) return "Expired";
-    if (remainingSecs < 60) return `${Math.ceil(remainingSecs)}s`;
-    const mins = Math.floor(remainingSecs / 60);
-    if (mins < 60) return `${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h`;
-  };
-
-  const balanceNum = userWalletBalance ? Number(formatEther(userWalletBalance)) : 0;
-  const lockWarning = !isLocked || remainingBlocks < 1000n;
-  const balanceWarning = balanceNum < 0.01;
   const charCount = code.length;
   const lineCount = code.split("\n").length;
   const isOverLimit = charCount > 32_768;
+
 
   // File drop handler
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -226,151 +202,51 @@ export function AuditForm() {
         </button>
       </div>
 
-      {/* ── Ritual Wallet Status Card ────────────────────────────────────── */}
+      {/* ── Ritual Wallet Info Card ───────────────────────────────────── */}
       {isConnected && (
         <div style={{
           background: "linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%)",
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
-          border: `1px solid ${lockWarning || balanceWarning ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.06)"}`,
+          border: "1px solid rgba(16,185,129,0.15)",
           borderRadius: "var(--radius-lg)",
-          padding: "16px 20px",
+          padding: "14px 20px",
           marginBottom: "var(--sp-4)",
           display: "flex",
-          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "space-between",
           gap: 12,
           animation: "fade-in 300ms ease both",
+          flexWrap: "wrap",
         }}>
-          {/* Header */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <i className="ti ti-wallet" style={{ fontSize: 18, color: "var(--ritual-purple-mid)" }} aria-hidden="true" />
-              <span style={{ fontSize: 13, fontWeight: 600, letterSpacing: "0.03em", textTransform: "uppercase", color: "var(--text-secondary)" }}>
-                Ritual Wallet Escrow
-              </span>
-            </div>
-            {/* Status indicator badge */}
-            <span style={{
-              fontSize: 11,
-              padding: "2px 8px",
-              borderRadius: "var(--radius-full)",
-              background: lockWarning || balanceWarning ? "rgba(245,158,11,0.1)" : "rgba(16,185,129,0.1)",
-              border: `1px solid ${lockWarning || balanceWarning ? "rgba(245,158,11,0.25)" : "rgba(16,185,129,0.25)"}`,
-              color: lockWarning || balanceWarning ? "var(--color-warning)" : "var(--color-success)",
-              fontFamily: "var(--font-mono)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: "50%",
-                background: lockWarning || balanceWarning ? "var(--color-warning)" : "var(--color-success)",
-              }} />
-              {lockWarning || balanceWarning ? "Needs Setup" : "Active Lock"}
-            </span>
-          </div>
-
-          {/* Grid info */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-            gap: 16,
-            background: "rgba(0,0,0,0.15)",
-            padding: 12,
-            borderRadius: "var(--radius-md)",
-            border: "1px solid rgba(255,255,255,0.03)",
-          }}>
-            {/* Balance */}
-            <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Locked Balance</div>
-              <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", color: balanceWarning ? "var(--color-warning)" : "var(--text-primary)" }}>
-                {userWalletBalance !== undefined ? Number(formatEther(userWalletBalance)).toFixed(4) : "0.0000"} RITUAL
-              </div>
-            </div>
-
-            {/* Lock Duration */}
-            <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Lock Duration</div>
-              <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", color: lockWarning ? "var(--color-warning)" : "var(--text-primary)" }}>
-                {isLocked ? `${remainingBlocks.toLocaleString()} blks` : "Expired / None"}
-              </div>
-            </div>
-
-            {/* Time Remaining */}
-            <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Time Remaining</div>
-              <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "var(--font-mono)", color: lockWarning ? "var(--color-warning)" : "var(--text-primary)" }}>
-                {isLocked ? `~${formatRemainingTime()}` : "0s"}
-              </div>
-            </div>
-          </div>
-
-          {/* Warning Message if setup is needed */}
-          {(lockWarning || balanceWarning) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 8,
-              fontSize: 12,
-              color: "var(--color-warning)",
-              lineHeight: 1.4,
+              width: 34, height: 34,
+              borderRadius: "var(--radius-md)",
+              background: "rgba(16,185,129,0.1)",
+              border: "1px solid rgba(16,185,129,0.25)",
+              display: "flex", alignItems: "center", justifyContent: "center",
             }}>
-              <i className="ti ti-alert-triangle" style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
-              <span>
-                {balanceWarning
-                  ? "Your locked RitualWallet balance is low (minimum 0.01 RITUAL recommended). "
-                  : "Your RitualWallet time-lock is too short or expired. "}
-                Please lock funds to prevent transaction rejection by the TEE validator.
-              </span>
+              <i className="ti ti-shield-check" style={{ fontSize: 16, color: "var(--color-success)" }} aria-hidden="true" />
             </div>
-          )}
-
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-            <button
-              onClick={async () => {
-                try {
-                  await depositFees("0.05");
-                } catch (e: any) {
-                  alert(e.message || "Deposit failed");
-                }
-              }}
-              className="btn btn-primary"
-              style={{
-                flex: 2,
-                padding: "8px 16px",
-                fontSize: 13,
-                background: "linear-gradient(135deg, var(--ritual-purple-mid) 0%, var(--ritual-purple-dark) 100%)",
-                boxShadow: "0 4px 12px rgba(139,92,246,0.25)",
-              }}
-            >
-              <i className="ti ti-lock-open" aria-hidden="true" style={{ marginRight: 6 }} />
-              Extend Lock &amp; Deposit 0.05 RITUAL
-            </button>
-
-            {/* Withdraw button (only active if lock is expired) */}
-            <button
-              onClick={async () => {
-                try {
-                  await withdrawFees();
-                } catch (e: any) {
-                  alert(e.message || "Withdraw failed");
-                }
-              }}
-              disabled={isLocked || balanceNum === 0}
-              className="btn btn-ghost"
-              style={{
-                flex: 1,
-                padding: "8px 16px",
-                fontSize: 13,
-                border: "1px solid rgba(255,255,255,0.08)",
-                opacity: isLocked || balanceNum === 0 ? 0.4 : 1,
-              }}
-            >
-              <i className="ti ti-arrow-up-right" aria-hidden="true" style={{ marginRight: 6 }} />
-              Withdraw All
-            </button>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Free Audit — Powered by Ritual TEE</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 1 }}>
+                GLM-4.7-FP8 &middot; No payment required &middot; Results stored on-chain
+              </div>
+            </div>
           </div>
+          <span style={{
+            fontSize: 11, padding: "3px 10px",
+            borderRadius: "var(--radius-full)",
+            background: "rgba(16,185,129,0.08)",
+            border: "1px solid rgba(16,185,129,0.25)",
+            color: "var(--color-success)",
+            fontFamily: "var(--font-mono)",
+            whiteSpace: "nowrap",
+          }}>
+            Chain ID 1979
+          </span>
         </div>
       )}
 
@@ -560,6 +436,7 @@ export function AuditForm() {
         streamedText={streamedText}
         severityScore={severityScore}
         txHash={txHash}
+        jobId={jobId}
         onReset={reset}
       />
     </div>
