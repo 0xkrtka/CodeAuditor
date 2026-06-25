@@ -496,72 +496,7 @@ export function useAudit(
         const initialCount = initialAuditIds ? initialAuditIds.length : 0;
         console.log(`[Audit] Initial audit count for ${userAddress}: ${initialCount}`);
 
-        // ── Step 1: Preflight — ensure sender RitualWallet ≥ 0.3 RITUAL ──────
-        // Ritual Chain validator requires the SENDER's RitualWallet to have
-        // sufficient staked balance (≥ ~0.3 RITUAL) to submit async LLM requests.
-        // If below threshold, auto-deposit 0.5 RITUAL for the user (one-time setup).
-        const MIN_RW_BALANCE = 300_000_000_000_000_000n; // 0.3 RITUAL
-        const DEPOSIT_AMOUNT = 500_000_000_000_000_000n; // 0.5 RITUAL to stake
-        const LOCK_DURATION  = 10_000_000n;              // ~40 months of blocks
 
-        const ritualWalletAbi = [{
-          name: "balanceOf", type: "function" as const,
-          stateMutability: "view" as const,
-          inputs: [{ name: "account", type: "address" }],
-          outputs: [{ type: "uint256" }],
-        }, {
-          name: "deposit", type: "function" as const,
-          stateMutability: "payable" as const,
-          inputs: [{ name: "lockDuration", type: "uint256" }],
-          outputs: [],
-        }];
-
-        const senderRwBalance = await publicClient.readContract({
-          address: RITUAL_CONTRACTS.RITUAL_WALLET,
-          abi: ritualWalletAbi,
-          functionName: "balanceOf",
-          args: [userAddress],
-        }) as bigint;
-
-        console.log(`[Audit] Sender RitualWallet balance: ${senderRwBalance} (min: ${MIN_RW_BALANCE})`);
-
-        if (senderRwBalance < MIN_RW_BALANCE) {
-          console.log("[Audit] RitualWallet balance too low — auto-depositing 0.5 RITUAL...");
-          setState((prev) => ({
-            ...prev,
-            phase: "submitting",
-            streamedText: "⚡ First-time setup: Staking 0.5 RITUAL to your RitualWallet (one-time)...",
-          }));
-
-          const depositData = encodeFunctionData({
-            abi: ritualWalletAbi,
-            functionName: "deposit",
-            args: [LOCK_DURATION],
-          });
-
-          const depositTx = await sendTransactionAsync({
-            to:    RITUAL_CONTRACTS.RITUAL_WALLET,
-            data:  depositData,
-            value: DEPOSIT_AMOUNT,
-            gas:   150_000n,
-            chainId: ritualChain.id,
-          });
-
-          console.log("[Audit] Deposit TX:", depositTx);
-          setState((prev) => ({
-            ...prev,
-            streamedText: `⏳ Confirming RitualWallet deposit... TX: ${depositTx.slice(0, 10)}...`,
-          }));
-
-          await publicClient.waitForTransactionReceipt({
-            hash: depositTx,
-            timeout: 60_000,
-            pollingInterval: 3_000,
-          });
-
-          console.log("[Audit] RitualWallet deposit confirmed. Proceeding with audit...");
-          setState((prev) => ({ ...prev, streamedText: "" }));
-        }
 
         // ── Step 2: Call requestAudit on CodeAuditor Contract ──────────
         // No approval needed — auditFee = 0 (free audit mode)
