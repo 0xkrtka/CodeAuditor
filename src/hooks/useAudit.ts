@@ -644,16 +644,18 @@ export function useAudit(
 
         let errorMsg: string = err?.message ?? "Unknown error";
 
-        if (errorMsg.includes("User rejected") || errorMsg.includes("user rejected")) {
+        if (errorMsg.includes("User rejected") || errorMsg.includes("user rejected") || errorMsg.includes("4001")) {
           errorMsg = "Transaction rejected by user.";
-        } else if (errorMsg.includes("insufficient funds") || errorMsg.includes("insufficient balance")) {
-          errorMsg = "Insufficient RITUAL for gas fees.";
+        } else if (errorMsg.includes("insufficient funds") || errorMsg.includes("insufficient balance") || errorMsg.includes("InsufficientFunds")) {
+          errorMsg = "Insufficient RITUAL for gas. Get RITUAL from https://faucet.ritualfoundation.org";
         } else if (errorMsg.includes("sender locked")) {
-          errorMsg = "RitualWallet sender is temporarily locked. Wait a few blocks and try again.";
-        } else if (errorMsg.includes("insufficient wallet balance")) {
-          errorMsg = "Contract RitualWallet balance too low. Please contact the dApp owner to top up.";
+          errorMsg = "RitualWallet sender locked — wait a few blocks then retry.";
+        } else if (errorMsg.includes("insufficient wallet balance") || errorMsg.includes("InsufficientWalletBalance")) {
+          errorMsg = "⚠️ Contract escrow balance too low for LLM inference. The dApp owner needs to fund the contract RitualWallet. Please try again later.";
         } else if (errorMsg.includes("NoExecutor")) {
           errorMsg = "No TEE executor configured on the contract. Contact the dApp owner.";
+        } else if (errorMsg.includes("timed out") || errorMsg.includes("timeout")) {
+          errorMsg = "Transaction timed out — Ritual TEE may be busy. Check explorer for your TX status.";
         }
 
         setState((prev) => ({
