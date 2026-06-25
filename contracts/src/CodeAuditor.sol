@@ -240,7 +240,7 @@ contract CodeAuditor {
             int256(-1),             // [18] seed (null = -1)
             "auto",                 // [19] serviceTier
             "",                     // [20] stopJson
-            true,                   // [21] stream — true enables SSE (tokens pushed before finalization)
+            false,                  // [21] stream — false: result stored on-chain, frontend polls via getAudit()
             int256(700),            // [22] temperature (0.7 × 1000)
             bytes(""),              // [23] toolChoiceData
             bytes(""),              // [24] toolsData
