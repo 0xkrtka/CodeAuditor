@@ -9,12 +9,12 @@ import { wagmiConfig } from "@/app/providers";
 // ── Contract addresses from environment ──────────────────────────────────────
 let AUDITOR_ADDRESS = (
   process.env.NEXT_PUBLIC_AUDITOR_ADDRESS ??
-  "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa"
+  "0x3D488d2bE000418361AE232C199bD3e88e672837"
 ) as `0x${string}`;
 
 // Force override if the env variable points to the old deprecated contract address
 if (AUDITOR_ADDRESS.toLowerCase() === "0x8cadb7a5303450e10ca5bae2a1442b906ec21b7c".toLowerCase()) {
-  AUDITOR_ADDRESS = "0x8a0237E3eDD7df869948E8e975801eB7d04ddBAa";
+  AUDITOR_ADDRESS = "0x3D488d2bE000418361AE232C199bD3e88e672837";
 }
 
 const PAYMENT_TOKEN = (
