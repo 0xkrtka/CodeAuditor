@@ -26,7 +26,9 @@ import {
 } from "@/lib/ritual";
 
 // ─── Ritual Streaming Service ─────────────────────────────────────────────────
-const STREAMING_SERVICE_URL = "https://streaming.ritualfoundation.org";
+// Per Enshrined AI docs: SSE endpoint uses txHash, not jobId.
+// URL format: /v1/stream/${txHash}  — EIP-712 signed {txHash, timestamp}
+const STREAMING_SERVICE_URL = "https://rpc.ritualfoundation.org";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 export type AuditPhase =
@@ -65,6 +67,9 @@ function encodeLLMPayload(
   messagesJson: string,
   streaming: boolean,
 ): `0x${string}` {
+  // Per Enshrined AI docs — 30-field ABI (fields 0-29)
+  // piiEnabled (field 28) and stream (field 21) are mutually exclusive
+  // convoHistory (field 29) is REQUIRED — empty StorageRef is valid
   return encodeAbiParameters(
     parseAbiParameters([
       "address, bytes[], uint256, bytes[], bytes,",
@@ -74,36 +79,36 @@ function encodeLLMPayload(
       "(string,string,string)",
     ].join("")),
     [
-      executor,               // (1)  executor — TEE node address
-      [],                     // (2)  encryptedSecrets
-      300n,                   // (3)  ttl — 300 blocks (~105s, safe for GLM reasoning)
-      [],                     // (4)  secretSignatures
-      "0x",                   // (5)  userPublicKey
-      messagesJson,           // (6)  messagesJson
-      "zai-org/GLM-4.7-FP8", // (7)  model — only confirmed live model on Ritual
-      0n,                     // (8)  frequencyPenalty
-      "",                     // (9)  logitBiasJson
-      false,                  // (10) logprobs
-      4096n,                  // (11) maxCompletionTokens — ≥4096 required for GLM reasoning model
-      "",                     // (12) metadataJson
-      "",                     // (13) modalitiesJson
-      1n,                     // (14) n
-      true,                   // (15) parallelToolCalls
-      0n,                     // (16) presencePenalty
-      "medium",               // (17) reasoningEffort
-      "0x",                   // (18) responseFormatData
-      -1n,                    // (19) seed (null)
-      "auto",                 // (20) serviceTier
-      "",                     // (21) stopJson
-      streaming,              // (22) stream — true enables SSE
-      700n,                   // (23) temperature (0.7 × 1000)
-      "0x",                   // (24) toolChoiceData
-      "0x",                   // (25) toolsData
-      -1n,                    // (26) topLogprobs (null)
-      1000n,                  // (27) topP (1.0 × 1000)
-      "",                     // (28) user
-      false,                  // (29) piiEnabled
-      ["", "", ""],           // (30) convoHistory — empty StorageRef
+      executor,               // (0)  executor — TEE node address
+      [],                     // (1)  encryptedSecrets
+      500n,                   // (2)  ttl — 500 blocks (maximum allowed)
+      [],                     // (3)  secretSignatures
+      "0x",                   // (4)  userPublicKey
+      messagesJson,           // (5)  messagesJson — OpenAI-compatible JSON
+      "zai-org/GLM-4.7-FP8", // (6)  model — zai-org/GLM-4.7-FP8 (64K context)
+      0n,                     // (7)  frequencyPenalty
+      "",                     // (8)  logitBiasJson
+      false,                  // (9)  logprobs
+      4096n,                  // (10) maxCompletionTokens — ≥4096 for GLM reasoning
+      "",                     // (11) metadataJson
+      "",                     // (12) modalitiesJson
+      1n,                     // (13) n
+      true,                   // (14) parallelToolCalls
+      0n,                     // (15) presencePenalty
+      "medium",               // (16) reasoningEffort
+      "0x",                   // (17) responseFormatData
+      -1n,                    // (18) seed (null = -1)
+      "auto",                 // (19) serviceTier
+      "",                     // (20) stopJson
+      streaming,              // (21) stream — true enables SSE token push
+      700n,                   // (22) temperature (0.7 × 1000)
+      "0x",                   // (23) toolChoiceData
+      "0x",                   // (24) toolsData
+      -1n,                    // (25) topLogprobs (null = -1)
+      1000n,                  // (26) topP (1.0 × 1000)
+      "",                     // (27) user
+      false,                  // (28) piiEnabled — mutually exclusive with streaming
+      ["", "", ""],           // (29) convoHistory — required StorageRef (empty = no history)
     ],
   ) as `0x${string}`;
 }
@@ -301,12 +306,20 @@ export function useAudit(
   //  Cannot use browser EventSource (no custom header support).
   //  Use fetch() with ReadableStream + Authorization + X-Timestamp headers.
   // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  //  SSE Streaming via fetch() + EIP-712 auth
+  //  Per Enshrined AI docs: stream key = txHash (not jobId).
+  //  EIP-712 signs { txHash: bytes32, timestamp: uint256 }.
+  //  Endpoint: /v1/stream/${txHash}  — tokens arrive before tx finalizes.
+  //  Cannot use browser EventSource (no custom header support) → use fetch().
+  // ─────────────────────────────────────────────────────────────────────────
   const openSseStream = useCallback(
-    async (jobId: string) => {
+    async (txHash: string) => {
       if (!walletClient) return;
 
-      // Sign EIP-712 stream request
-      // Domain: { name, version, chainId } — NO verifyingContract per docs
+      // Sign EIP-712 stream request per Enshrined AI docs:
+      //   domain: { name, version, chainId } — no verifyingContract
+      //   types:  StreamRequest { txHash: bytes32, timestamp: uint256 }
       const timestamp = BigInt(Math.floor(Date.now() / 1000));
       let signature: `0x${string}`;
       try {
@@ -318,15 +331,15 @@ export function useAudit(
           },
           types: {
             StreamRequest: [
-              { name: "jobId",     type: "bytes32" },
+              { name: "txHash",    type: "bytes32" },
               { name: "timestamp", type: "uint256" },
             ],
           },
           primaryType: "StreamRequest",
-          message: { jobId: jobId as `0x${string}`, timestamp },
+          message: { txHash: txHash as `0x${string}`, timestamp },
         });
       } catch (err) {
-        console.warn("[SSE] EIP-712 sign failed, will try without auth:", err);
+        console.warn("[SSE] EIP-712 sign failed, proceeding without auth:", err);
         signature = "0x" as `0x${string}`;
       }
 
@@ -335,8 +348,8 @@ export function useAudit(
       const abortController = new AbortController();
       abortRef.current = abortController;
 
-      // Use jobId-based SSE URL (correct format per Ritual docs)
-      const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${jobId}`;
+      // SSE URL uses txHash per Enshrined AI docs
+      const streamUrl = `${STREAMING_SERVICE_URL}/v1/stream/${txHash}`;
       console.log("[SSE] Connecting to:", streamUrl);
 
       try {
@@ -350,14 +363,20 @@ export function useAudit(
         });
 
         if (!response.ok) {
-          console.warn(`[SSE] HTTP ${response.status} — stream unavailable, result from contract.`);
+          console.warn(`[SSE] HTTP ${response.status} — stream unavailable, falling back to contract poll.`);
           return;
         }
 
-        const reader  = response.body!.getReader();
+        if (!response.body) {
+          console.warn("[SSE] No response body — stream unavailable.");
+          return;
+        }
+
+        const reader  = response.body.getReader();
         const decoder = new TextDecoder();
         let   buffer  = "";
         let   fullText = "";
+        let   gotTokens = false;
 
         const timeout = setTimeout(() => {
           abortController.abort();
@@ -389,15 +408,21 @@ export function useAudit(
 
             try {
               const event = JSON.parse(data);
-              if (event.token) {
-                fullText += event.token;
+              // OpenAI-style SSE: choices[0].delta.content OR token field
+              const token: string =
+                event.choices?.[0]?.delta?.content ??
+                event.token ??
+                "";
+              if (token) {
+                gotTokens = true;
+                fullText += token;
                 setState((prev) => ({
                   ...prev,
-                  streamedText: prev.streamedText + event.token,
+                  streamedText: prev.streamedText + token,
                   tokenCount:   prev.tokenCount + 1,
                 }));
               }
-              if (event.done) {
+              if (event.done || event.choices?.[0]?.finish_reason) {
                 clearTimeout(timeout);
                 setState((prev) => ({
                   ...prev,
@@ -413,7 +438,7 @@ export function useAudit(
         }
 
         clearTimeout(timeout);
-        if (fullText) {
+        if (gotTokens && fullText) {
           setState((prev) => ({
             ...prev,
             phase:         "complete",
@@ -423,7 +448,7 @@ export function useAudit(
       } catch (err: any) {
         if (err.name === "AbortError") return;
         console.warn("[SSE] Stream error:", err.message);
-        // Don't set error — contract polling fallback handles this
+        // Don't set error state — contract polling fallback will handle this
       }
     },
     [walletClient],
@@ -535,12 +560,11 @@ export function useAudit(
           jobId,
         }));
 
-        // ── Step 4: Start SSE stream using jobId (correct URL) ──────────
-        if (jobId) {
-          openSseStream(jobId);
-        } else {
-          console.warn("[Audit] No jobId found in receipt logs, skipping SSE stream");
-        }
+        // ── Step 4: Start SSE stream using txHash (per Enshrined AI docs) ─
+        // Tokens stream to frontend BEFORE the tx finalizes on-chain.
+        // The SSE endpoint authenticates via EIP-712 signed {txHash, timestamp}.
+        console.log("[SSE] Starting stream for txHash:", auditTx);
+        openSseStream(auditTx);
 
         // ── Step 5: Poll contract for completed audit result ─────────────
         // The TX is already confirmed, so audit data should appear very soon.

@@ -51,7 +51,8 @@ async function main() {
   const wBal = await ritualWallet.balanceOf(AUDITOR);
   console.log(`🏦  Contract RitualWallet: ${ethers.formatEther(wBal)} RITUAL`);
 
-  // ── Step 1: Check & approve token (amount=0 but contract still calls transferFrom) ──
+  // ── Step 1: Check & approve token ────────────────────────────────────────
+  // auditFee=0 → contract skips transferFrom. Approval not required but harmless.
   const token = new ethers.Contract(TOKEN, [
     "function allowance(address,address) view returns (uint256)",
     "function approve(address,uint256) returns (bool)",
@@ -61,9 +62,9 @@ async function main() {
   const allowance = await token.allowance(wallet.address, AUDITOR);
   console.log(`📝  Token allowance: ${ethers.formatEther(allowance)}`);
 
-  // Even though fee=0, let's approve to be safe
+  // Even though fee=0, auditFee guard ensures transferFrom is skipped
   if (allowance === 0n) {
-    console.log("   Approving token (fee=0, but contract still calls transferFrom)...");
+    console.log("   Approving token (optional when fee=0, but harmless)...");
     try {
       const approveTx = await token.approve(AUDITOR, ethers.parseEther("1000"));
       console.log(`   Approve tx: ${approveTx.hash}`);
@@ -204,11 +205,17 @@ contract Test {
       "tuple(string,string,string)",
     ],
     [
-      "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B", [], 300n, [], "0x",
-      messagesJson, "zai-org/GLM-4.7-FP8", 0n, "", false, 256n, "", "",
-      1n, true, 0n, "medium", "0x", -1n, "auto", "", false,
-      700n, "0x", "0x", -1n, 1000n, "", false,
-      ["", "", ""],
+      // Per Enshrined AI docs — 30-field ABI (fields 0-29)
+      "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B", // [0]  executor
+      [], 500n, [], "0x",                            // [1-4] secrets/ttl/pubkey
+      messagesJson,                                  // [5]  messagesJson
+      "zai-org/GLM-4.7-FP8",                        // [6]  model
+      0n, "", false, 256n, "", "",                   // [7-12] freq/logit/logprobs/maxTok/meta/modal
+      1n, true, 0n, "medium", "0x", -1n, "auto", "",// [13-20] n/parallel/pres/reasoning/respFmt/seed/tier/stop
+      true,                                          // [21] stream: true (EIP-712 SSE via txHash)
+      700n, "0x", "0x", -1n, 1000n, "",             // [22-27] temp/toolChoice/tools/topLogprob/topP/user
+      false,                                         // [28] piiEnabled (mutually exclusive with stream)
+      ["", "", ""],                                 // [29] convoHistory — REQUIRED
     ]
   );
 
@@ -219,6 +226,7 @@ contract Test {
       gasLimit: 3_000_000n,
     });
     console.log(`✅  Direct precompile TX: ${directTx.hash}`);
+    console.log(`   SSE stream URL (per Enshrined AI docs): https://rpc.ritualfoundation.org/v1/stream/${directTx.hash}`);
     const directReceipt = await directTx.wait(1, 60_000);
     console.log(`   Status: ${directReceipt.status === 1 ? "✅ SUCCESS" : "❌ REVERTED"}`);
     console.log(`   Gas used: ${directReceipt.gasUsed.toString()}`);

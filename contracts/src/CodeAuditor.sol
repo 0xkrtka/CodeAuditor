@@ -4,14 +4,20 @@ pragma solidity ^0.8.20;
 /**
  * @title CodeAuditor v6
  * @notice On-chain Solidity audit powered by Ritual LLM precompile (0x0802)
+ *         Uses zai-org/GLM-4.7-FP8 (64K context, MIT license) inside TEE.
+ *
+ * Per Enshrined AI docs (30-field ABI, fields 0-29):
+ *   - Field 21 (stream): true — enables SSE token streaming to frontend
+ *   - Field 28 (piiEnabled): false — mutually exclusive with streaming
+ *   - Field 29 (convoHistory): required StorageRef — empty is valid
+ *   - TTL max: 500 blocks
  *
  * v6 fixes:
  *   - transferFrom is now skipped when auditFee == 0 (free audit mode)
  *   - Executor address passed as parameter or uses defaultExecutor
  *   - Owner can set default executor via setExecutor()
- *   - Correct 30-field LLM ABI per Ritual docs
  *   - depositForFees() to fund RitualWallet for executor escrow
- *   - _decodeLLMResponse handles 5-field output (StorageRef in field 5)
+ *   - stream: true for SSE streaming support
  */
 
 interface IERC20 {
@@ -211,37 +217,38 @@ contract CodeAuditor {
         returns (bytes memory)
     {
         StorageRef memory convoHistory = StorageRef("", "", "");
+        // 30-field ABI per Enshrined AI docs (fields 0-29)
         return abi.encode(
-            executor,               // address  executor
-            new bytes[](0),         // bytes[]  encryptedSecrets
-            uint256(500),           // uint256  ttl (500 blocks is the absolute maximum allowed by the validator)
-            new bytes[](0),         // bytes[]  secretSignatures
-            bytes(""),              // bytes    userPublicKey
-            messagesJson,           // string   messagesJson
-            "zai-org/GLM-4.7-FP8", // string   model
-            int256(0),              // int256   frequencyPenalty
-            "",                     // string   logitBiasJson
-            false,                  // bool     logprobs
-            int256(4096),           // int256   maxCompletionTokens (>=4096 for GLM-4.7-FP8 reasoning)
-            "",                     // string   metadataJson
-            "",                     // string   modalitiesJson
-            uint256(1),             // uint256  n
-            true,                   // bool     parallelToolCalls
-            int256(0),              // int256   presencePenalty
-            "medium",               // string   reasoningEffort
-            bytes(""),              // bytes    responseFormatData
-            int256(-1),             // int256   seed (null)
-            "auto",                 // string   serviceTier
-            "",                     // string   stopJson
-            false,                  // bool     stream
-            int256(700),            // int256   temperature (0.7 × 1000)
-            bytes(""),              // bytes    toolChoiceData
-            bytes(""),              // bytes    toolsData
-            int256(-1),             // int256   topLogprobs (null)
-            int256(1000),           // int256   topP (1.0 × 1000)
-            "",                     // string   user
-            false,                  // bool     piiEnabled
-            convoHistory            // (string,string,string) convoHistory — empty
+            executor,               // [0]  executor
+            new bytes[](0),         // [1]  encryptedSecrets
+            uint256(500),           // [2]  ttl (500 blocks — maximum allowed by validator)
+            new bytes[](0),         // [3]  secretSignatures
+            bytes(""),              // [4]  userPublicKey
+            messagesJson,           // [5]  messagesJson (OpenAI-compatible JSON array)
+            "zai-org/GLM-4.7-FP8", // [6]  model (64K context, MIT license)
+            int256(0),              // [7]  frequencyPenalty
+            "",                     // [8]  logitBiasJson
+            false,                  // [9]  logprobs
+            int256(4096),           // [10] maxCompletionTokens (≥4096 for GLM reasoning)
+            "",                     // [11] metadataJson
+            "",                     // [12] modalitiesJson
+            uint256(1),             // [13] n
+            true,                   // [14] parallelToolCalls
+            int256(0),              // [15] presencePenalty
+            "medium",               // [16] reasoningEffort
+            bytes(""),              // [17] responseFormatData
+            int256(-1),             // [18] seed (null = -1)
+            "auto",                 // [19] serviceTier
+            "",                     // [20] stopJson
+            true,                   // [21] stream — true enables SSE (tokens pushed before finalization)
+            int256(700),            // [22] temperature (0.7 × 1000)
+            bytes(""),              // [23] toolChoiceData
+            bytes(""),              // [24] toolsData
+            int256(-1),             // [25] topLogprobs (null = -1)
+            int256(1000),           // [26] topP (1.0 × 1000)
+            "",                     // [27] user
+            false,                  // [28] piiEnabled (mutually exclusive with stream:true)
+            convoHistory            // [29] convoHistory — REQUIRED StorageRef (empty = no history)
         );
     }
 

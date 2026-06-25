@@ -42,14 +42,17 @@ export const RITUAL_CONTRACTS = {
 export const KNOWN_EXECUTOR = "0xB42e435c4252A5a2E7440e37B609F00c61a0c91B" as `0x${string}`;
 
 // ─── SSE endpoint for streaming LLM tokens ───────────────────────────────────
-export const SSE_BASE_URL = "https://rpc.ritualfoundation.org/sse";
+// Per Enshrined AI docs: /v1/stream/${txHash} — EIP-712 auth with {txHash, timestamp}
+// Tokens arrive BEFORE the transaction finalizes on-chain.
+export const SSE_BASE_URL = "https://rpc.ritualfoundation.org";
 
 /**
- * Build the SSE URL for a given jobId returned from LLM precompile.
+ * Build the SSE URL for a given txHash (per Enshrined AI docs).
  * The TEE executor pushes EIP-712 signed tokens over this stream.
+ * Auth: sign { txHash: bytes32, timestamp: uint256 } with EIP-712.
  */
-export function buildSseUrl(jobId: string): string {
-  return `${SSE_BASE_URL}/${jobId}`;
+export function buildSseUrl(txHash: string): string {
+  return `${SSE_BASE_URL}/v1/stream/${txHash}`;
 }
 
 // ─── CodeAuditor ABI (subset used by frontend) ───────────────────────────────
